@@ -5,6 +5,8 @@ Basic data structures for modeling information propagation.
 import warnings
 import numpy as np
 import scipy.sparse
+import networkx as nx
+import matplotlib.pyplot as plt
 
 
 class Agent:
@@ -448,6 +450,11 @@ class Environment:
         self.inner = None  # AdjacnecyMatrix for inner circle networks.
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
 
+        # Networks Graph
+        self.G = None
+        self.pos = None
+        self.edge_labels = None
+
         # Initialize:
         self.update()
 
@@ -461,6 +468,7 @@ class Environment:
         self.update_adjacency()
         self.update_influence()
         self.update_state()
+        self.update_network_graph()
 
     def update_agents(self):
         """
@@ -529,6 +537,38 @@ class Environment:
 
         # Update state (i.e. which agents are informed):
         self.state = State(self)
+
+    def update_network_graph(self, iterations=250):
+        """
+
+        """
+        # Initialize the graph
+        self.G = nx.DiGraph()
+
+        # Create the Graph structure
+        for agent in self.agents.values():
+            for next_agent_id in agent.inner_circle:
+                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
+                self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
+
+            for next_agent in agent.outer_circle:
+                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
+                self.G.add_edge(agent.id, next_agent, val=connection_strength)
+
+        self.pos = nx.spring_layout(self.G, iterations=iterations)
+        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
+                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
+
+    def plot_network_graph(self):
+        """
+
+        """
+        if self.G is None:
+            self.update_network_graph()
+
+        _, ax = plt.subplots()
+        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, ax=ax, connectionstyle='arc3, rad = 0.1')
 
     @property
     def n_informed(self):
