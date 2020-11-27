@@ -266,9 +266,21 @@ class State:
         elif isinstance(informed, list):
             for agent_id in informed:
                 self.informed[agent_id] = True
+        elif isinstance(informed, State):
+            for agent_id, val in informed.informed.items():
+                self.informed[agent_id] = val
         else:
             raise ValueError("informed should be list or dict.")
         self.n_agents = len(self.env.agent_ids)
+
+    @property
+    def vector(self):
+        """
+        Return the state as a numpy boolean array in the same order as the adjacency matrix.
+        """
+        informed = {agent_id for agent_id,val in self.informed.items() if val}
+        vector = np.array([(agent_id in informed) for agent_id in self.env.agent_ids])
+        return vector
 
     @property
     def n_informed(self):
@@ -335,6 +347,15 @@ class Action:
         self.value = value
 
     @property
+    def vector(self):
+        """
+        Return the action as a numpy boolean array in the same order as the adjacency matrix.
+        """
+        selected = {agent_id for agent_id,val in self.selected.items() if val}
+        vector = np.array([(agent_id in selected) for agent_id in self.env.agent_ids])
+        return vector
+
+    @property
     def n_selected(self):
         return sum(self.selected.values())
 
@@ -398,7 +419,9 @@ class Environment:
         self.update()
 
     def update(self):
-
+        """
+        Peform all environment updates.
+        """
         self.update_agents()
         self.update_workplaces()
         self.update_specialties()
@@ -407,8 +430,9 @@ class Environment:
         self.update_state()
 
     def update_agents(self):
-
-        # Bind each agent to environment:
+        """
+        Bind each agent to environment.
+        """
         for agent_id, agent in self.agents.items():
             agent.env = self
             # Apply defaults only for agent values that are not already set:
@@ -422,8 +446,9 @@ class Environment:
                 agent.persuasiveness = self.base_persuasiveness
 
     def update_workplaces(self):
-
-        # Rebuild workplace lookup:
+        """
+        Rebuild workplace lookup.
+        """
         for agent_id, agent in self.agents.items():
             for workplace_id in agent.workplace_ids:
                 if workplace_id not in self.workplaces:
@@ -431,8 +456,9 @@ class Environment:
                 self.workplaces[workplace_id].append(agent)
 
     def update_specialties(self):
-
-        # Rebuild speciality lookup:
+        """
+        Rebuild speciality lookup.
+        """
         for agent_id, agent in self.agents.items():
             for specialty_id in agent.specialty_ids:
                 if specialty_id not in self.specialties:
@@ -440,20 +466,40 @@ class Environment:
                 self.specialties[specialty_id].append(agent)
 
     def update_adjacency(self):
-
-        # Rebuild agent adjacency matrix:
+        """
+        Rebuild agent adjacency matrix.
+        """
         self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
         self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
     def update_influence(self):
-
-        # Rebuild agent adjacency matrix:
+        """
+        Rebuild agent adjacency matrix.
+        """
         self.influence = InfluenceMatrix(self, agent_ids=self.agent_ids)
 
-    def update_state(self):
+    def update_state(self, informed=None):
+        """
+        Build state object to reflect current agent states.
+        informed:
+            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
+            (Optional -- if not provided, agent states are left unchanged.)
+        """
+
+        # Apply specified state, if provided (otherwise keep current state):
+        if informed:
+            # Build a state object (which accepts `informed` in various formats):
+            new_state = State(self, informed)
+            # Update agents in the environment to reflect requested state:
+            for agent_id, val in zip(self.agents, new_state.vector):
+                self.agents[agent_id].informed = val
 
         # Update state (i.e. which agents are informed):
         self.state = State(self)
+
+    @property
+    def n_informed(self):
+        return self.state.n_informed
 
     def __str__(self):
         return f"<Environment with {self.state.n_informed}/{self.state.n_agents} informed agents>"
