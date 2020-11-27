@@ -95,8 +95,8 @@ class Agent:
         self.specialty_ids = specialty_ids if specialty_ids else list()
         self.inner_circle = inner_circle if inner_circle else list()
         self.outer_circle = outer_circle if outer_circle else list()
-        self.receptivity = receptivity
-        self.persuasiveness = persuasiveness
+        self.receptivity = max(0,min(1,receptivity)) * 1.0
+        self.persuasiveness = max(0,min(1,persuasiveness)) * 1.0
 
         # Define state variables:
         self.informed = self.informed_init  # Is this professional currently up to date?
@@ -112,13 +112,16 @@ class AdjacencyMatrix:
     Self-connections (i.e. diagonal entries) should always be False.
     """
 
-    def __init__(self, env, scope='inner'):
+    def __init__(self, env, scope='inner', agent_ids=None):
         """
         env:
             The simulation environment.
         scope:
             Which type of relationship circle to encode
             (i.e. 'inner', 'outer', or 'both').
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
         """
 
         # Bind simulation environment:
@@ -130,7 +133,7 @@ class AdjacencyMatrix:
         assert scope in self.valid_scopes, f"{scope} is not a valid scope: {self.valid_scopes}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = list(env.agents.keys())
+        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -205,18 +208,24 @@ class InfluenceMatrix:
     agnostic to the state/action history.
     """
 
-    def __init__(self, env, model='default'):
+    def __init__(self, env, model='default', agent_ids=None):
         """
         env:
             The simulation environment.
         method:
-            Hyperparameter to control which model is used. 
+            Hyperparameter to control which model is used.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
         """
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
         self.model = model
         assert model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
+
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -225,8 +234,41 @@ class InfluenceMatrix:
         self.update()
 
     def update(self):
-        pass  # TO DO.
 
+        if self.model=='default':
+
+            # Start from adjacency matrices:
+            inner = self.env.inner.matrix  #.copy()
+            outer = self.env.outer.matrix  #.copy()
+
+            # Remove inner circle from outer cirlce (i.e. remove redundancy):
+            outer = ((outer*1.0 - inner*1.0)>0)
+
+            # Get agent properies (in same order as adjacency matrix):
+            agents = [self.env.agents[agent_id] for agent_id in self.env.agent_ids]
+            receptivity = np.array([agent.receptivity for agent in agents]).reshape(1,-1)  # Row vector.
+            persuasiveness = np.array([agent.persuasiveness for agent in agents]).reshape(-1,1)  # Column vector.
+
+            # Scale by receptivity (apply across all rows, with different value for each column):
+            inner = inner.multiply(receptivity)
+            outer = outer.multiply(receptivity)
+
+            # Scale by persuasiveness (apply across all columns, with different value for each row):
+            inner = inner.multiply(persuasiveness)
+            outer = outer.multiply(persuasiveness)
+
+            # Combine inner and outer circles:
+            # (no values will be more than 1 if inner and outer were never True for the same entry)
+            matrix = inner + 0.5*outer
+
+            # Store result:
+            self.matrix = matrix
+
+        else:
+            raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
+
+        return self.matrix
+    
     def toarray(self):
         return self.matrix.toarray()
 
@@ -257,9 +299,21 @@ class State:
         elif isinstance(informed, list):
             for agent_id in informed:
                 self.informed[agent_id] = True
+        elif isinstance(informed, State):
+            for agent_id, val in informed.informed.items():
+                self.informed[agent_id] = val
         else:
             raise ValueError("informed should be list or dict.")
-        self.n_agents = len(env.agents)
+        self.n_agents = len(self.env.agent_ids)
+
+    @property
+    def vector(self):
+        """
+        Return the state as a numpy boolean array in the same order as the adjacency matrix.
+        """
+        informed = {agent_id for agent_id,val in self.informed.items() if val}
+        vector = np.array([(agent_id in informed) for agent_id in self.env.agent_ids])
+        return vector
 
     @property
     def n_informed(self):
@@ -321,9 +375,18 @@ class Action:
                 self.selected[agent_id] = True
         else:
             raise ValueError("selected should be list or dict.")
-        self.n_agents = len(env.agents)
+        self.n_agents = len(self.env.agent_ids)
         # Optionally assign estimated value of this intervention:
         self.value = value
+
+    @property
+    def vector(self):
+        """
+        Return the action as a numpy boolean array in the same order as the adjacency matrix.
+        """
+        selected = {agent_id for agent_id,val in self.selected.items() if val}
+        vector = np.array([(agent_id in selected) for agent_id in self.env.agent_ids])
+        return vector
 
     @property
     def n_selected(self):
@@ -354,7 +417,14 @@ class Environment:
     The actions are defined by which combination of professionals is **selected** for intervention.
     """
 
-    def __init__(self, agents, seed=None):
+    def __init__(self, agents, agent_ids=None, seed=None):
+        """
+        agents:
+            A list or dict (keyed by agent_id) of Agent objects.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
+        """
 
         # Hyperparameters:
         self.base_receptivity = 0.5
@@ -369,18 +439,22 @@ class Environment:
         self.agents = Agent.to_dict(agents)
         self.workplaces = dict()
         self.specialties = dict()
+        
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if agent_ids else list(sorted(self.agents.keys()))
 
         # Network state (set by update function):
         self.state = None  # Boolean indicators of which agents are informed.
-        self.inner = None  # 
-        self.outer = None
+        self.inner = None  # AdjacnecyMatrix for inner circle networks.
+        self.outer = None  # AdjacnecyMatrix for outer circle networks.
 
         # Initialize:
         self.update()
 
     def update(self):
-
-
+        """
+        Peform all environment updates.
+        """
         self.update_agents()
         self.update_workplaces()
         self.update_specialties()
@@ -389,8 +463,9 @@ class Environment:
         self.update_state()
 
     def update_agents(self):
-
-        # Bind each agent to environment:
+        """
+        Bind each agent to environment.
+        """
         for agent_id, agent in self.agents.items():
             agent.env = self
             # Apply defaults only for agent values that are not already set:
@@ -404,8 +479,9 @@ class Environment:
                 agent.persuasiveness = self.base_persuasiveness
 
     def update_workplaces(self):
-
-        # Rebuild workplace lookup:
+        """
+        Rebuild workplace lookup.
+        """
         for agent_id, agent in self.agents.items():
             for workplace_id in agent.workplace_ids:
                 if workplace_id not in self.workplaces:
@@ -413,8 +489,9 @@ class Environment:
                 self.workplaces[workplace_id].append(agent)
 
     def update_specialties(self):
-
-        # Rebuild speciality lookup:
+        """
+        Rebuild speciality lookup.
+        """
         for agent_id, agent in self.agents.items():
             for specialty_id in agent.specialty_ids:
                 if specialty_id not in self.specialties:
@@ -422,20 +499,40 @@ class Environment:
                 self.specialties[specialty_id].append(agent)
 
     def update_adjacency(self):
-
-        # Rebuild agent adjacency matrix:
-        self.inner = AdjacencyMatrix(self, scope='inner')
-        self.outer = AdjacencyMatrix(self, scope='outer')
+        """
+        Rebuild agent adjacency matrix.
+        """
+        self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
+        self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
     def update_influence(self):
+        """
+        Rebuild agent adjacency matrix.
+        """
+        self.influence = InfluenceMatrix(self, model='default', agent_ids=self.agent_ids)
 
-        # Rebuild agent adjacency matrix:
-        self.influence = InfluenceMatrix(self)
+    def update_state(self, informed=None):
+        """
+        Build state object to reflect current agent states.
+        informed:
+            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
+            (Optional -- if not provided, agent states are left unchanged.)
+        """
 
-    def update_state(self):
+        # Apply specified state, if provided (otherwise keep current state):
+        if informed:
+            # Build a state object (which accepts `informed` in various formats):
+            new_state = State(self, informed)
+            # Update agents in the environment to reflect requested state:
+            for agent_id, val in zip(self.agents, new_state.vector):
+                self.agents[agent_id].informed = val
 
         # Update state (i.e. which agents are informed):
         self.state = State(self)
+
+    @property
+    def n_informed(self):
+        return self.state.n_informed
 
     def __str__(self):
         return f"<Environment with {self.state.n_informed}/{self.state.n_agents} informed agents>"
