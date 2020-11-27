@@ -112,13 +112,16 @@ class AdjacencyMatrix:
     Self-connections (i.e. diagonal entries) should always be False.
     """
 
-    def __init__(self, env, scope='inner'):
+    def __init__(self, env, scope='inner', agent_ids=None):
         """
         env:
             The simulation environment.
         scope:
             Which type of relationship circle to encode
             (i.e. 'inner', 'outer', or 'both').
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
         """
 
         # Bind simulation environment:
@@ -130,7 +133,7 @@ class AdjacencyMatrix:
         assert scope in self.valid_scopes, f"{scope} is not a valid scope: {self.valid_scopes}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = list(env.agents.keys())
+        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -205,18 +208,24 @@ class InfluenceMatrix:
     agnostic to the state/action history.
     """
 
-    def __init__(self, env, model='default'):
+    def __init__(self, env, model='default', agent_ids=None):
         """
         env:
             The simulation environment.
         method:
-            Hyperparameter to control which model is used. 
+            Hyperparameter to control which model is used.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
         """
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
         self.model = model
         assert model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
+
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -259,7 +268,7 @@ class State:
                 self.informed[agent_id] = True
         else:
             raise ValueError("informed should be list or dict.")
-        self.n_agents = len(env.agents)
+        self.n_agents = len(self.env.agent_ids)
 
     @property
     def n_informed(self):
@@ -321,7 +330,7 @@ class Action:
                 self.selected[agent_id] = True
         else:
             raise ValueError("selected should be list or dict.")
-        self.n_agents = len(env.agents)
+        self.n_agents = len(self.env.agent_ids)
         # Optionally assign estimated value of this intervention:
         self.value = value
 
@@ -354,7 +363,14 @@ class Environment:
     The actions are defined by which combination of professionals is **selected** for intervention.
     """
 
-    def __init__(self, agents, seed=None):
+    def __init__(self, agents, agent_ids=None, seed=None):
+        """
+        agents:
+            A list or dict (keyed by agent_id) of Agent objects.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the matrix.
+            If not provided, defaults to sorted order of agent_ids.
+        """
 
         # Hyperparameters:
         self.base_receptivity = 0.5
@@ -369,17 +385,19 @@ class Environment:
         self.agents = Agent.to_dict(agents)
         self.workplaces = dict()
         self.specialties = dict()
+        
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if agent_ids else list(sorted(self.agents.keys()))
 
         # Network state (set by update function):
         self.state = None  # Boolean indicators of which agents are informed.
-        self.inner = None  # 
-        self.outer = None
+        self.inner = None  # AdjacnecyMatrix for inner circle networks.
+        self.outer = None  # AdjacnecyMatrix for outer circle networks.
 
         # Initialize:
         self.update()
 
     def update(self):
-
 
         self.update_agents()
         self.update_workplaces()
@@ -424,13 +442,13 @@ class Environment:
     def update_adjacency(self):
 
         # Rebuild agent adjacency matrix:
-        self.inner = AdjacencyMatrix(self, scope='inner')
-        self.outer = AdjacencyMatrix(self, scope='outer')
+        self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
+        self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
     def update_influence(self):
 
         # Rebuild agent adjacency matrix:
-        self.influence = InfluenceMatrix(self)
+        self.influence = InfluenceMatrix(self, agent_ids=self.agent_ids)
 
     def update_state(self):
 
