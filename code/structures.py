@@ -95,8 +95,8 @@ class Agent:
         self.specialty_ids = specialty_ids if specialty_ids else list()
         self.inner_circle = inner_circle if inner_circle else list()
         self.outer_circle = outer_circle if outer_circle else list()
-        self.receptivity = receptivity
-        self.persuasiveness = persuasiveness
+        self.receptivity = max(0,min(1,receptivity)) * 1.0
+        self.persuasiveness = max(0,min(1,persuasiveness)) * 1.0
 
         # Define state variables:
         self.informed = self.informed_init  # Is this professional currently up to date?
@@ -234,8 +234,41 @@ class InfluenceMatrix:
         self.update()
 
     def update(self):
-        pass  # TO DO.
 
+        if self.model=='default':
+
+            # Start from adjacency matrices:
+            inner = self.env.inner.matrix  #.copy()
+            outer = self.env.outer.matrix  #.copy()
+
+            # Remove inner circle from outer cirlce (i.e. remove redundancy):
+            outer = ((outer*1.0 - inner*1.0)>0)
+
+            # Get agent properies (in same order as adjacency matrix):
+            agents = [self.env.agents[agent_id] for agent_id in self.env.agent_ids]
+            receptivity = np.array([agent.receptivity for agent in agents]).reshape(1,-1)  # Row vector.
+            persuasiveness = np.array([agent.persuasiveness for agent in agents]).reshape(-1,1)  # Column vector.
+
+            # Scale by receptivity (apply across all rows, with different value for each column):
+            inner = inner.multiply(receptivity)
+            outer = outer.multiply(receptivity)
+
+            # Scale by persuasiveness (apply across all columns, with different value for each row):
+            inner = inner.multiply(persuasiveness)
+            outer = outer.multiply(persuasiveness)
+
+            # Combine inner and outer circles:
+            # (no values will be more than 1 if inner and outer were never True for the same entry)
+            matrix = inner + 0.5*outer
+
+            # Store result:
+            self.matrix = matrix
+
+        else:
+            raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
+
+        return self.matrix
+    
     def toarray(self):
         return self.matrix.toarray()
 
@@ -476,7 +509,7 @@ class Environment:
         """
         Rebuild agent adjacency matrix.
         """
-        self.influence = InfluenceMatrix(self, agent_ids=self.agent_ids)
+        self.influence = InfluenceMatrix(self, model='default', agent_ids=self.agent_ids)
 
     def update_state(self, informed=None):
         """
