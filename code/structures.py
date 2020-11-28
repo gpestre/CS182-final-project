@@ -124,7 +124,7 @@ class AdjacencyMatrix:
             (i.e. 'inner', 'outer', or 'both').
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
-            If not provided, defaults to sorted order of agent_ids.
+            If not provided, defaults to the order used by the environment.
         """
 
         # Bind simulation environment:
@@ -136,7 +136,7 @@ class AdjacencyMatrix:
         assert scope in self.valid_scopes, f"{scope} is not a valid scope: {self.valid_scopes}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
+        self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -219,7 +219,7 @@ class InfluenceMatrix:
             Hyperparameter to control which model is used.
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
-            If not provided, defaults to sorted order of agent_ids.
+            If not provided, defaults to the order used by the environment.
         """
         self.env = env
         # Set influence model:
@@ -228,7 +228,7 @@ class InfluenceMatrix:
         assert model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
+        self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
