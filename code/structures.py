@@ -276,6 +276,99 @@ class InfluenceMatrix:
         return self.matrix.toarray()
 
 
+class Graph:
+    """
+    A graph of the influence network (using networkx).
+    """
+
+    def __init__(self, env, matrix=None, agent_ids=None):
+        """
+        env:
+            The simulation environment.
+        influence:
+            The matrix to represent.
+            If None, defaults to environment's current influence matrix.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the node list.
+            If not provided, defaults to the order used by the environment.
+        """
+        self.env = env
+        # Use sepecified influence matrix or use the one from the environment:
+        self.infl_matrix = matrix if matrix else self.env.influence.matrix
+        # Maintain a list of agent_ids in the order they appear in the node list:
+        if matrix:
+            assert agent_ids, "If custom `matrix` was specified, must provide corresponding list of `agent_ids`."
+            assert matrix.shape[0]==matrix.shape[1], "Expect square influence matrix."
+            assert len(agent_ids) == matrix.shape[0], "Expect agent_ids to have same length as matrix height."
+            self.agent_ids = agent_ids
+        else:
+            self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
+
+        # Define state variables (initialized below):
+        self.G = None
+        self.pos = None
+        self.edge_labels = None
+
+        # Initialize:
+        self.update_structure()
+        #self.update_layout()  # Performed on demand by utility functions.
+
+    @property
+    def node_labels(self):
+        return self.agent_ids
+
+    def update_structure(self):
+        
+        # Build graph:
+        self.G = nx.DiGraph()
+        
+        # Create the Graph structure by looping through all i,j pairs:
+        for i,i_agent_id in enumerate(self.agent_ids):
+            i_agent = self.env.agents[i_agent_id]
+            for j,j_agent_id in enumerate(self.agent_ids):
+                
+                either_circle = set(i_agent.inner_circle) | set(i_agent.outer_circle)  # Set union.
+                if j_agent_id in either_circle:
+                    connection_strength = self.infl_matrix[i,j]  # Influence value between 0 and 1.
+                    self.G.add_edge(i, j, val=connection_strength)
+
+    def update_layout(self, iterations=None):
+        """
+        Calculate node positions (with specified number of iterations)
+        """
+
+        # Build graph if needed:
+        if self.G is None:
+            self.update_structure()
+
+        # Apply default value:
+        if iterations is None:
+            iterations = 250
+
+        # Calculate positions and build edge labels:
+        self.pos = nx.spring_layout(self.G, iterations=iterations)
+        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
+                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
+
+    def plot_network_graph(self, iterations=None, ax=None):
+        """
+        Plot the network graph in the specified axes (or not axes of not specified).
+        (The `iterations` parameter is passed to the layout update function, only if needed.)
+        Returns the axes.
+        """
+
+        # Update layout (and build graph) if needed:
+        if (self.pos is None) or (self.edge_labels is None):
+            self.update_layout(iterations=iterations)
+
+        if not ax:
+            _, ax = plt.subplots()
+        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, ax=ax, connectionstyle='arc3, rad = 0.1')
+
+        return ax
+
+
 class State:
 
     """
@@ -452,9 +545,7 @@ class Environment:
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
 
         # Networks Graph
-        self.G = None
-        self.pos = None
-        self.edge_labels = None
+        self.graph = None
 
         # Transition Matrix
         self.T = None
@@ -607,37 +698,31 @@ class Environment:
                             total_probability = 0
                         self.T[i,j,k] = total_probability
 
-    def update_network_graph(self, iterations=250):
+    def update_network_graph(self):
         """
-
+        A graph representation of the agent influence network.
         """
         # Initialize the graph
-        self.G = nx.DiGraph()
+        self.graph = Graph(env=self)
 
-        # Create the Graph structure
-        for agent in self.agents.values():
-            for next_agent_id in agent.inner_circle:
-                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
-                self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
-
-            for next_agent in agent.outer_circle:
-                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
-                self.G.add_edge(agent.id, next_agent, val=connection_strength)
-
-        self.pos = nx.spring_layout(self.G, iterations=iterations)
-        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
-                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
-
-    def plot_network_graph(self):
+    def plot_network_graph(self, iterations=None, ax=None):
         """
-
+        Draw the network graph.
+        This is a wrapper function for Graph.plot_network_graph,
+        which calculates positions if needed.
         """
-        if self.G is None:
+        # Make sure the graph object has been initialized:
+        if self.graph is None:
             self.update_network_graph()
+        # Pass parameters through to Graph.plot_network_graph, which updates as needed:
+        return self.graph.plot_network_graph(iterations=iterations, ax=ax)
 
-        _, ax = plt.subplots()
-        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
-        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, ax=ax, connectionstyle='arc3, rad = 0.1')
+    @property
+    def G(self):
+        """
+        Alias for the network graph property.
+        """
+        return self.graph
 
     @property
     def n_informed(self):
