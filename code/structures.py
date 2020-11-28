@@ -7,6 +7,7 @@ import numpy as np
 import scipy.sparse
 import networkx as nx
 import matplotlib.pyplot as plt
+import itertools
 
 
 class Agent:
@@ -455,6 +456,11 @@ class Environment:
         self.pos = None
         self.edge_labels = None
 
+        # Transition Matrix
+        self.T = None
+        self.action_space = None
+        self.state_space = None
+
         # Initialize:
         self.update()
 
@@ -537,6 +543,69 @@ class Environment:
 
         # Update state (i.e. which agents are informed):
         self.state = State(self)
+
+    def update_transition_matrix(self, intervention_n=2):
+        """
+        WARNING - Only run for small problem sizes
+
+        intervention_n:
+            Number of agents being informed at each timestep
+        """
+        self.action_space = list(itertools.combinations(self.agent_ids, intervention_n))
+        self.state_space = list(itertools.product([0,1], repeat=len(self.agent_ids)))
+
+        self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+
+        for i, actions in enumerate(self.action_space):
+            for j, state1 in enumerate(self.state_space):
+                for k, state2 in enumerate(self.state_space):
+
+                    # Check that the new state is consistent with the action alone
+                    consistent = 0
+                    for action in actions:
+                        if state2[action] == 1:
+                            consistent += 1
+                        
+                    if consistent == intervention_n:
+                    
+                        # Calculate the probabilities of influence occuring to each next state
+                        total_influence_prob = []
+                        consistency_check = 1
+
+                        for n_state, n_val in enumerate(state2):
+                            next_state_prob = []
+                            if n_state in actions:
+                                next_state_prob.append(0)
+                            else:
+                                for c_state, c_val in enumerate(state1):
+                                    if c_val == 1:
+
+                                        # Special case where the states are the same
+                                        if n_state == c_state: 
+
+                                            # Consistency check 
+                                            if n_val == 0:
+                                                consistency_check = 0
+                                                next_state_prob.append(1)
+                                            else:
+                                                next_state_prob.append(0)
+                                        else:
+                                            next_state_prob.append(1 - self.influence.matrix[c_state, n_state])
+                                    else:
+                                        next_state_prob.append(1)
+
+                            prob_no_influence = np.prod(next_state_prob)
+                            prob_influence = 1 - prob_no_influence
+                            if n_val == 0:
+                                total_influence_prob.append(prob_no_influence)
+                            else:
+                                total_influence_prob.append(prob_influence)
+                    
+                        if consistency_check == 1:
+                            total_probability = np.prod(total_influence_prob)
+                        else:
+                            total_probability = 0
+                        self.T[i,j,k] = total_probability
 
     def update_network_graph(self, iterations=250):
         """
