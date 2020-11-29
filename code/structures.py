@@ -841,6 +841,7 @@ class Environment:
         self.state = None  # Boolean indicators of which agents are informed.
         self.inner = None  # AdjacnecyMatrix for inner circle networks.
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
+        self.influence = None  # InfluenceMatrix.
 
         # Networks Graph
         self.graph = None
