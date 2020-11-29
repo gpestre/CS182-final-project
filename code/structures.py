@@ -371,7 +371,50 @@ class TransitionMatrix:
                 for state in states
             ]
         return states
-        
+
+    @classmethod
+    def agent_probabilities(cls, env, state, action):
+        """
+        Given a starting state and an action, returns the probability that each agent is informed (in the landing state).
+        The return is a vector of floats, corresponding to the agents in env.agent_id order.
+        env:
+            The simulation environment.
+        state:
+            The starting state.
+        action:
+            The applied action.
+        """
+
+        # Get boolean representation of state:
+        try:
+            state = state.vector
+        except:
+            assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+        # Get boolean representation of action:
+        try:
+            action = action.vector
+        except:
+            assert len(action)==len(env.agent_ids), f"Expect an Action object or a vector of length {len(env.agent_ids)}"
+
+        # Get state vector and influence matrix:
+        probs = env.influence.matrix
+
+        # Convert to numpy matrix (won't remain sparse during manipulation):
+        probs = probs.toarray()
+
+        # Multiply by state column -- uninformed agents will not influence anyone:
+        probs = np.where(state.reshape(-1,1), probs, 0)
+
+        # Multiply by state row -- already informed agents will remain informed:
+        probs = np.where(state.reshape(1,-1), 1, probs)
+
+        # Multiply by action row -- agents selected for intervention will be informed:
+        probs = np.where(action.reshape(1,-1), 1, probs)
+
+        # Calculate how likely each agent is to be informed at the end of this step:
+        probs = 1-np.prod(1-probs,axis=0)
+
+        return probs
 
     def __init__(self, env, model=None, n_selected=None, agent_ids=None):
         """
@@ -494,24 +537,9 @@ class TransitionMatrix:
             for i, action in enumerate(useful_actions):
                 for j, state1 in enumerate(starting_states):
 
-                    # Get state vector and influence matrix:
-                    probs = self.env.influence.matrix
-
-                    # Convert to numpy matrix (won't remain sparse during manipulation):
-                    probs = probs.toarray()
-
-                    # Multiply by state column -- uninformed agents will not influence anyone:
-                    probs = np.where(state1.reshape(-1,1), probs, 0)
-
-                    # Multiply by state row -- already informed agents will remain informed:
-                    probs = np.where(state1.reshape(1,-1), 1, probs)
-
-                    # Multiply by action row -- agents selected for intervention will be informed:
-                    probs = np.where(action.reshape(1,-1), 1, probs)
-
                     # Calculate how likely each agent is to be informed at the end of this step:
-                    probs = 1-np.prod(1-probs,axis=0)
-                        
+                    probs = TransitionMatrix.agent_probabilities(env=self.env, state=state1, action=action)
+                    
                     for k, state2 in enumerate(landing_states):
                         
                         # Flip the probability for agents who should end up not informed and
