@@ -211,7 +211,7 @@ class InfluenceMatrix:
     agnostic to the state/action history.
     """
 
-    def __init__(self, env, model='default', agent_ids=None):
+    def __init__(self, env, model=None, agent_ids=None):
         """
         env:
             The simulation environment.
@@ -224,7 +224,7 @@ class InfluenceMatrix:
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
-        self.model = model
+        self.model = model if model is not None else 'default'
         assert self.model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
@@ -811,19 +811,52 @@ class Environment:
     The actions are defined by which combination of professionals is **selected** for intervention.
     """
 
-    def __init__(self, agents, agent_ids=None, seed=None):
+    def __init__(
+        self, agents, agent_ids=None, seed=None,
+        base_receptivity = 0.5,
+        base_persuasiveness = 0.5,
+        intervention_size = 100,
+        influence_model = None,
+        transition_model = None,
+    ):
         """
         agents:
             A list or dict (keyed by agent_id) of Agent objects.
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
             If not provided, defaults to sorted order of agent_ids.
+        seed:
+            (Optional) An integer seed for numpy random state.
+        
+        HYPERPARAMETERS:
+
+        base_receptivity:
+            (float between 0.0 and 1.0)
+            How receptive agents are when receiving information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        base_persuasiveness:
+            (float between 0.0 and 1.0)
+            How presuasive agents are when transimitting information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        intervention_size:
+            (int)
+            The default number of agents to select for intervention at each step.
+            (Under some transition models, actions may include fewer interventions if
+            the intervention_size is larger than the number of uninformed agents.)
+        influence_model:
+            (string: 'default')
+            [Defaults are handled in the InfluenceMatrix class.]
+        transition_model:
+            (string: 'exhaustive', 'exhaustive_fast', 'pruned')
+            [Defaults are handled in the TransitionMatrix class.]
         """
 
         # Hyperparameters:
-        self.base_receptivity = 0.5
-        self.base_persuasiveness = 0.5
-        self.intervention_size = 100  # How many interventions at each step?
+        self.base_receptivity = base_receptivity
+        self.base_persuasiveness = base_persuasiveness
+        self.intervention_size = intervention_size
+        self.influence_model = influence_model
+        self.transition_model = transition_model
 
         # Random state:
         self.seed = seed
@@ -908,11 +941,12 @@ class Environment:
         self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
         self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
-    def update_influence(self):
+    def update_influence(self, model=None):
         """
         Rebuild agent adjacency matrix.
         """
-        self.influence = InfluenceMatrix(self, model='default', agent_ids=self.agent_ids)
+        model = model if model is not None else self.influence_model
+        self.influence = InfluenceMatrix(self, model=model, agent_ids=self.agent_ids)
 
     def update_state(self, informed=None):
         """
@@ -943,6 +977,7 @@ class Environment:
         model:
             The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
+        model = model if model is not None else self.transition_model
         self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
 
     def update_network_graph(self):
