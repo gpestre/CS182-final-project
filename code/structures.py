@@ -430,8 +430,8 @@ class TransitionMatrix:
 
                         # Check that the new state is consistent with the action alone
                         consistent = 0
-                        for action in actions:
-                            if state2[action] == 1:
+                        for action_index, action_bool in enumerate(actions):
+                            if (action_bool == 1) and (state2[action_index] == 1):
                                 consistent += 1
                             
                         if consistent == self.n_selected:
@@ -442,7 +442,7 @@ class TransitionMatrix:
 
                             for n_state, n_val in enumerate(state2):
                                 next_state_prob = []
-                                if n_state in actions:
+                                if actions[n_state]==True:
                                     next_state_prob.append(0)
                                 else:
                                     for c_state, c_val in enumerate(state1):
