@@ -393,7 +393,7 @@ class TransitionMatrix:
         self.env = env
         # Set influence model:
         self.valid_models = {'exhaustive','pruned'}
-        self.model = model if model is not None else 'pruned'
+        self.model = model if model is not None else 'exhaustive'
         assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
