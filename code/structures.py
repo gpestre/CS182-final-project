@@ -326,23 +326,23 @@ class TransitionMatrix:
         return actions
 
     @classmethod
-    def enumerate_states(cls, env, state=None, actions=None, as_objects=False):
+    def enumerate_states(cls, env, state=None, as_objects=False):
         """
         Enumerate the possible states for a given environment.
         env:
             The simulation environment.
-        state; actions:
-            (State object; list of Action objects) Optional.
-            If specified, enumerates only states that are reachable from the given state and actions.
-            If False, exhaustively list all possible states (including those that are uncreachable from the current state).
+        state:
+            (State object) If specified, enumerates only states that can be reached from this state.
+            If False, exhaustively list all possible states.
         as_objects:
             (bool) Optionally return a list of State objects.
             Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
         """
-        if (state is None) and (actions is None):
+        if state is None:
             # Excaustive case:
-            states = list(itertools.product([0,1], repeat=len(env.agent_ids)))
-        elif (state is not None) and (actions is not None):
+            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
+            states = [np.array(state) for state in states]
+        elif state is not None:
             # Pruned case:
             try:
                 # If state is a State object:
@@ -351,19 +351,10 @@ class TransitionMatrix:
                 # If state is a vector of booleans:
                 assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
                 informed = state
-            # Build list to collect states reachable by these actions:
-            states = []
-            try:
-                # If list of boolean vectors:
-                actions = np.vstack(actions)
-            except:
-                # If list of Action objects:
-                actions = np.vstack([action.vector for action in actions])
-            states = actions + informed.reshape(1,-1)
-            states = (states>=1).astype(bool)
-        else:
-            # Not defined:
-            raise ValueError("This function expects either both or neither of `state` and `actions` to be specified.")
+            # Enumerate states:
+            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
+            # Remove unreachable states:
+            states = [np.array(state) for state in states if not np.any((state==True)&(informed==False))]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
@@ -416,7 +407,7 @@ class TransitionMatrix:
 
 
         # Build state and action space:
-        self.action_space = TransitionMatrix.enumerate_actions(env=self.env, n_selected=self.n_selected, as_objects=False)
+        self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
         self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
 
         # Build transitin matrix:
@@ -480,14 +471,12 @@ class TransitionMatrix:
             # Get meaningful actions and reachable states:
             n_selected = self.n_selected
             current_state = self.env.state
-            useful_actions = TransitionMatrix.enumerate_actions(env=self.env, n_selected=n_selected, state=current_state, as_objects=False)
-            landing_states = TransitionMatrix.enumerate_states(env=self.env, state=current_state, actions=useful_actions, as_objects=False)
+            useful_actions = TransitionMatrix.enumerate_actions(env=self.env, state=current_state, as_objects=False, n_selected=n_selected)
+            landing_states = TransitionMatrix.enumerate_states(env=self.env, state=current_state, as_objects=False)
             starting_states = [current_state.vector]
 
             # Initialize transition matrix:
             self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
-
-            raise NotImplementedError("TO DO.")
             
             for i, action in enumerate(useful_actions):
                 for j, state1 in enumerate(starting_states):
@@ -522,6 +511,8 @@ class TransitionMatrix:
 
         else:
             raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
+
+        assert np.all( self.T.sum(axis=-1)==1 ), "Expected all rows to sum to 1."
 
         return self.T
 
