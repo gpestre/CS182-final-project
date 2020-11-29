@@ -368,7 +368,7 @@ class TransitionMatrix:
         return states
         
 
-    def __init__(self, env, model='exhaustive', n_selected=None, agent_ids=None):
+    def __init__(self, env, model=None, n_selected=None, agent_ids=None):
         """
         env:
             The simulation environment.
@@ -384,8 +384,8 @@ class TransitionMatrix:
         """
         self.env = env
         # Set influence model:
-        self.valid_models = {'exhaustive','pruned'}
-        self.model = model if model is not None else 'exhaustive'
+        self.valid_models = {'exhaustive','exhaustive_fast','pruned'}
+        self.model = model if model is not None else 'exhaustive_fast'
         assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
@@ -466,17 +466,28 @@ class TransitionMatrix:
                                 total_probability = 0
                             self.T[i,j,k] = total_probability
 
-        elif self.model=='pruned':
+        elif (self.model=='exhaustive_fast') or (self.model=='pruned'):
             
-            # Build state and action space (limited to meaninfgul actions and reachable states):
-            self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
-            self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
+            # Build state and action space (possibly limiting to meaninfgul actions and reachable states):
+            if self.model=='exhaustive_fast':
+                 # Branch from all states (i.e. pass `state=None` to the enumeration function):
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=None, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
+                starting_states = self.state_space
+            elif self.model=='pruned':
+                # Only branch from current state:
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
+                starting_states = [self.env.state.vector]
+            # Common to both methods:
+            useful_actions = self.action_space
+            landing_states = self.state_space
 
             # Initialize transition matrix:
-            self.T = np.zeros((len(self.action_space), 1, len(self.state_space)))
+            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
             
-            for i, action in enumerate(self.action_space):
-                for j, state1 in enumerate([self.env.state.vector]):
+            for i, action in enumerate(useful_actions):
+                for j, state1 in enumerate(starting_states):
 
                     # Get state vector and influence matrix:
                     probs = self.env.influence.matrix
@@ -485,18 +496,18 @@ class TransitionMatrix:
                     probs = probs.toarray()
 
                     # Multiply by state column -- uninformed agents will not influence anyone:
-                    probs = probs * state1.reshape(-1,1)
+                    probs = np.where(state1.reshape(-1,1), probs, 0)
 
                     # Multiply by state row -- already informed agents will remain informed:
-                    probs = np.where(state1.reshape(1,-1),1,probs)
+                    probs = np.where(state1.reshape(1,-1), 1, probs)
 
                     # Multiply by action row -- agents selected for intervention will be informed:
-                    probs = np.where(action.reshape(1,-1),1,probs)
+                    probs = np.where(action.reshape(1,-1), 1, probs)
 
                     # Calculate how likely each agent is to be informed at the end of this step:
                     probs = 1-np.prod(1-probs,axis=0)
                         
-                    for k, state2 in enumerate(self.state_space):
+                    for k, state2 in enumerate(landing_states):
                         
                         # Flip the probability for agents who should end up not informed and
                         # get total probability by multiplying how likely each new state is for each agent:
@@ -594,7 +605,7 @@ class Graph:
             self.update_layout(iterations=iterations)
 
         if influenced is None:
-            influenced = np.zeros(len(self.env.agent_ids), dtype=int)
+            influenced = self.env.state.vector  # Boolean vector.
 
         if action_nodes is None:
             action_nodes = np.zeros(len(self.env.agent_ids), dtype=int)
