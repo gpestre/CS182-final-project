@@ -124,7 +124,7 @@ class AdjacencyMatrix:
             (i.e. 'inner', 'outer', or 'both').
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
-            If not provided, defaults to sorted order of agent_ids.
+            If not provided, defaults to the order used by the environment.
         """
 
         # Bind simulation environment:
@@ -136,7 +136,7 @@ class AdjacencyMatrix:
         assert scope in self.valid_scopes, f"{scope} is not a valid scope: {self.valid_scopes}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
+        self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -219,16 +219,16 @@ class InfluenceMatrix:
             Hyperparameter to control which model is used.
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
-            If not provided, defaults to sorted order of agent_ids.
+            If not provided, defaults to the order used by the environment.
         """
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
         self.model = model
-        assert model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
+        assert self.model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
-        self.agent_ids = agent_ids if agent_ids else list(sorted(env.agents.keys()))
+        self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.matrix = None
@@ -274,6 +274,364 @@ class InfluenceMatrix:
     
     def toarray(self):
         return self.matrix.toarray()
+
+
+class TransitionMatrix:
+    """
+    A representation of the transition probabilities where:
+    - the state space is each possible combination status values across agents and
+    - the action space is each possible combination of agents selected for intervention.
+    """
+
+    @classmethod
+    def enumerate_actions(cls, env, n_selected=None, state=None, as_objects=False):
+        """
+        Enumerate all possible inteventions in a given environment.
+        env:
+            The simulation environment.
+        n_selected:
+            (int) The max number of inteventions (defaults to value set in environment).
+        state:
+            (State object) If specified, enumerates only actions that can be meaningfully taken at this state.
+            If False, exhaustively list all possible actions (including those that select already informed agents).
+        as_objects:
+            (bool) Optionally return a list of Action objects.
+            Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
+        """
+        # Get intervention size:
+        n_selected = n_selected if n_selected else env.intervention_size
+        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        if state is None:
+            # Consider all agents as candidates for intervention:
+            selections = list(itertools.combinations(env.agent_ids, n_selected))
+        elif state is not None:
+            # Get indices of uninformed agents:
+            try:
+                # If state is a State object:
+                informed = state.vector  # Extract vector of booleans.
+            except:
+                # If state is a vector of booleans:
+                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+                informed = state
+            candidates = np.array(env.agent_ids)[np.argwhere(informed==False)].flatten()
+            # Assume more inteventions are better than fewer:
+            n_selected = min(n_selected, len(candidates))
+            # Get all possible combinations:
+            selections = itertools.combinations(candidates, n_selected)
+        # Build an action object (which expects an list of agent_ids):
+        actions = [Action(env, selected=list(selection)) for selection in selections]
+        if not as_objects:
+            # Optionally extract the internal representation (vector of booleans):
+            actions = [action.vector for action in actions]
+        return actions
+
+    @classmethod
+    def enumerate_states(cls, env, state=None, as_objects=False):
+        """
+        Enumerate the possible states for a given environment.
+        env:
+            The simulation environment.
+        state:
+            (State object) If specified, enumerates only states that can be reached from this state.
+            If False, exhaustively list all possible states.
+        as_objects:
+            (bool) Optionally return a list of State objects.
+            Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
+        """
+        if state is None:
+            # Excaustive case:
+            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
+            states = [np.array(state) for state in states]
+        elif state is not None:
+            # Pruned case:
+            try:
+                # If state is a State object:
+                informed = state.vector  # Extract vector of booleans.
+            except:
+                # If state is a vector of booleans:
+                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+                informed = state
+            # Enumerate states:
+            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
+            # Remove unreachable states:
+            states = [np.array(state) for state in states]
+            states = [state for state in states if not np.any((state==False)&(informed==True))]
+        if as_objects:
+            # Build an action object (using a dict of booleans):
+            states = [
+                State(env, informed={
+                    agent_id : val
+                    for agent_id,val in zip(env.agent_ids,state)
+                })
+                for state in states
+            ]
+        return states
+        
+
+    def __init__(self, env, model=None, n_selected=None, agent_ids=None):
+        """
+        env:
+            The simulation environment.
+        method:
+            Hyperparameter to control which model is used.
+            The 'exhaustive' mode enumerates all states and actions.
+            The 'pruned' mode limits enumeration to reachable states.
+        n_selected:
+            The (max) number of agents to select for each intervention.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the state/acton space.
+            If not provided, defaults to the order used by the environmnet.
+        """
+        self.env = env
+        # Set influence model:
+        self.valid_models = {'exhaustive','exhaustive_fast','pruned'}
+        self.model = model if model is not None else 'exhaustive_fast'
+        assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
+
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if (agent_ids is not None) else list(sorted(env.agents.keys()))
+
+        # Get intervention size:
+        n_selected = n_selected if n_selected else env.intervention_size
+        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        self.n_selected = n_selected
+
+        # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
+        self.T = None
+        self.state_space = None
+        self.action_space = None
+
+        # Initialize:
+        self.update()
+
+    def update(self):
+
+        # Build transitin matrix:
+        if self.model=='exhaustive':
+            
+            # Build state and action space:
+            self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
+            self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            
+            # Initialize transition matrix:
+            self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+
+            # Calculate transition probabilities:
+            for i, action in enumerate(self.action_space):
+                for j, state1 in enumerate(self.state_space):
+                    for k, state2 in enumerate(self.state_space):
+
+                        # Check that the new state is consistent with the action alone
+                        both_true = action & state2
+                        consistent = np.sum(both_true)
+                            
+                        if consistent == self.n_selected:
+                        
+                            # Calculate the probabilities of influence occuring to each next state
+                            total_influence_prob = []
+                            consistency_check = 1
+
+                            for n_state, n_val in enumerate(state2):
+                                next_state_prob = []
+                                if action[n_state]==True:
+                                    next_state_prob.append(0)
+                                else:
+                                    for c_state, c_val in enumerate(state1):
+                                        if c_val == 1:
+
+                                            # Special case where the states are the same
+                                            if n_state == c_state: 
+
+                                                # Consistency check 
+                                                if n_val == 0:
+                                                    consistency_check = 0
+                                                    next_state_prob.append(1)
+                                                else:
+                                                    next_state_prob.append(0)
+                                            else:
+                                                next_state_prob.append(1 - self.env.influence.matrix[c_state, n_state])
+                                        else:
+                                            next_state_prob.append(1)
+
+                                prob_no_influence = np.prod(next_state_prob)
+                                prob_influence = 1 - prob_no_influence
+                                if n_val == 0:
+                                    total_influence_prob.append(prob_no_influence)
+                                else:
+                                    total_influence_prob.append(prob_influence)
+                        
+                            if consistency_check == 1:
+                                total_probability = np.prod(total_influence_prob)
+                            else:
+                                total_probability = 0
+                            self.T[i,j,k] = total_probability
+
+        elif (self.model=='exhaustive_fast') or (self.model=='pruned'):
+            
+            # Build state and action space (possibly limiting to meaninfgul actions and reachable states):
+            if self.model=='exhaustive_fast':
+                 # Branch from all states (i.e. pass `state=None` to the enumeration function):
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=None, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
+                starting_states = self.state_space
+            elif self.model=='pruned':
+                # Only branch from current state:
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
+                starting_states = [self.env.state.vector]
+            # Common to both methods:
+            useful_actions = self.action_space
+            landing_states = self.state_space
+
+            # Initialize transition matrix:
+            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
+            
+            for i, action in enumerate(useful_actions):
+                for j, state1 in enumerate(starting_states):
+
+                    # Get state vector and influence matrix:
+                    probs = self.env.influence.matrix
+
+                    # Convert to numpy matrix (won't remain sparse during manipulation):
+                    probs = probs.toarray()
+
+                    # Multiply by state column -- uninformed agents will not influence anyone:
+                    probs = np.where(state1.reshape(-1,1), probs, 0)
+
+                    # Multiply by state row -- already informed agents will remain informed:
+                    probs = np.where(state1.reshape(1,-1), 1, probs)
+
+                    # Multiply by action row -- agents selected for intervention will be informed:
+                    probs = np.where(action.reshape(1,-1), 1, probs)
+
+                    # Calculate how likely each agent is to be informed at the end of this step:
+                    probs = 1-np.prod(1-probs,axis=0)
+                        
+                    for k, state2 in enumerate(landing_states):
+                        
+                        # Flip the probability for agents who should end up not informed and
+                        # get total probability by multiplying how likely each new state is for each agent:
+                        total_probability = np.prod( np.where(state2==True, probs, 1-probs) )
+                        
+                        # Store result in matrix:
+                        self.T[i,j,k] = total_probability
+
+        else:
+            raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
+
+        assert np.all( self.T.sum(axis=-1)==1 ), "Expected all rows to sum to 1."
+
+        return self.T
+
+
+class Graph:
+    """
+    A graph of the influence network (using networkx).
+    """
+
+    def __init__(self, env):
+        """
+        env:
+            The simulation environment.
+        """
+        self.env = env
+
+        # Define state variables (initialized below):
+        self.G = None
+        self.pos = None
+        self.edge_labels = None
+
+        # Initialize:
+        self.update_structure()
+        #self.update_layout()  # Performed on demand by utility functions.
+
+    @property
+    def node_labels(self):
+        """List of agent_ids, in node order."""
+        return list(self.G.nodes)
+
+    @property
+    def node_index_lookup(self):
+        """Lookup from agent_id to index in node list."""
+        return {agent_id:node_index for node_index,agent_id in enumerate(self.G.nodes)}
+
+    @property
+    def state_index_lookup(self):
+        """Lookup from agent_id to position in state vector."""
+        return {agent_id:state_index for state_index,agent_id in enumerate(self.env.agent_ids)}
+
+    def update_structure(self):
+        
+        # Build graph:
+        self.G = nx.DiGraph()
+
+        # Create the Graph structure
+        for agent in self.env.agents.values():
+            for next_agent_id in agent.inner_circle:
+                connection_strength = self.env.influence.matrix[(self.state_index_lookup[agent.id], self.state_index_lookup[next_agent_id])]
+                self.G.add_edge(agent.id, next_agent_id, val=connection_strength, edge_color='#DE3D83')
+
+            for next_agent in agent.outer_circle:
+                connection_strength = self.env.influence.matrix[(self.state_index_lookup[agent.id], self.state_index_lookup[next_agent_id])]
+                self.G.add_edge(agent.id, next_agent, val=connection_strength, edge_color='black')
+
+    def update_layout(self, iterations=None):
+        """
+        Calculate node positions (with specified number of iterations)
+        """
+
+        # Build graph if needed:
+        if self.G is None:
+            self.update_structure()
+
+        # Apply default value:
+        if iterations is None:
+            iterations = 20
+
+        # Calculate positions and build edge labels:
+        self.pos = nx.spring_layout(self.G, iterations=iterations)
+        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
+                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
+
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
+        """
+        Plot the network graph in the specified axes (or not axes of not specified).
+        (The `iterations` parameter is passed to the layout update function, only if needed.)
+        Returns the axes.
+        """
+
+        # Update layout (and build graph) if needed:
+        if (self.pos is None) or (self.edge_labels is None):
+            self.update_layout(iterations=iterations)
+
+        if influenced is None:
+            influenced = self.env.state.vector  # Boolean vector.
+
+        if action_nodes is None:
+            action_nodes = np.zeros(len(self.env.agent_ids), dtype=int)
+
+        # Set up color map
+        color_map = []
+        for node in self.node_labels:
+            state_index = self.state_index_lookup[node]
+            if influenced[state_index] and action_nodes[state_index]:
+                color_map.append('#dbb700')
+            elif influenced[state_index]:
+                color_map.append('#f45844')
+            elif action_nodes[state_index]:
+                color_map.append('#3dbd5d')
+            else:
+                color_map.append('#0098d8')
+
+        if ax is None:
+            if figsize is None:
+                figsize = (10,7)
+            _, ax = plt.subplots(figsize=figsize)
+        
+        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, ax=ax, connectionstyle='arc3, rad = 0.1')
+
+        return ax
 
 
 class State:
@@ -452,14 +810,10 @@ class Environment:
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
 
         # Networks Graph
-        self.G = None
-        self.pos = None
-        self.edge_labels = None
+        self.graph = None
 
         # Transition Matrix
-        self.T = None
-        self.action_space = None
-        self.state_space = None
+        self.trans = None
 
         # Initialize:
         self.update()
@@ -474,7 +828,8 @@ class Environment:
         self.update_adjacency()
         self.update_influence()
         self.update_state()
-        self.update_network_graph()
+        #self.update_network_graph()
+        #self.update_transition_matrix()
 
     def update_agents(self):
         """
@@ -544,117 +899,69 @@ class Environment:
         # Update state (i.e. which agents are informed):
         self.state = State(self)
 
-    def update_transition_matrix(self, intervention_n=2):
+    def update_transition_matrix(self, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
-        intervention_n:
-            Number of agents being informed at each timestep
+        n_selected:
+            Number of agents being selected for intervention at each timestep.
+            If None, defaults to self.intervention_size.
+        model:
+            The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
-        self.action_space = list(itertools.combinations(list(range(len(self.agent_ids))), intervention_n))
-        self.state_space = list(itertools.product([0,1], repeat=len(self.agent_ids)))
-        self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+        self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
 
-        for i, actions in enumerate(self.action_space):
-            for j, state1 in enumerate(self.state_space):
-                for k, state2 in enumerate(self.state_space):
-
-                    # Check that the new state is consistent with the action alone
-                    consistent = 0
-                    for action in actions:
-                        if state2[action] == 1:
-                            consistent += 1
-                        
-                    if consistent == intervention_n:
-                    
-                        # Calculate the probabilities of influence occuring to each next state
-                        total_influence_prob = []
-                        consistency_check = 1
-
-                        for n_state, n_val in enumerate(state2):
-                            next_state_prob = []
-                            if n_state in actions:
-                                next_state_prob.append(0)
-                            else:
-                                for c_state, c_val in enumerate(state1):
-                                    if c_val == 1:
-
-                                        # Special case where the states are the same
-                                        if n_state == c_state: 
-
-                                            # Consistency check 
-                                            if n_val == 0:
-                                                consistency_check = 0
-                                                next_state_prob.append(1)
-                                            else:
-                                                next_state_prob.append(0)
-                                        else:
-                                            next_state_prob.append(1 - self.influence.matrix[c_state, n_state])
-                                    else:
-                                        next_state_prob.append(1)
-
-                            prob_no_influence = np.prod(next_state_prob)
-                            prob_influence = 1 - prob_no_influence
-                            if n_val == 0:
-                                total_influence_prob.append(prob_no_influence)
-                            else:
-                                total_influence_prob.append(prob_influence)
-                    
-                        if consistency_check == 1:
-                            total_probability = np.prod(total_influence_prob)
-                        else:
-                            total_probability = 0
-                        self.T[i,j,k] = total_probability
-
-    def update_network_graph(self, iterations=18):
+    def update_network_graph(self):
         """
-
+        A graph representation of the agent influence network.
         """
         # Initialize the graph
-        self.G = nx.DiGraph()
+        self.graph = Graph(env=self)
 
-        # Create the Graph structure
-        for agent in self.agents.values():
-            for next_agent_id in agent.inner_circle:
-                connection_strength = self.influence.matrix[(self.agent_ids.index(agent.id), self.agent_ids.index(next_agent_id))]
-                self.G.add_edge(agent.id, next_agent_id, val=connection_strength, edge_color='b')
-
-            for next_agent in agent.outer_circle:
-                connection_strength = self.influence.matrix[(self.agent_ids.index(agent.id), self.agent_ids.index(next_agent_id))]
-                self.G.add_edge(agent.id, next_agent, val=connection_strength, edge_color='g')
-
-        self.pos = nx.spring_layout(self.G, iterations=iterations)
-        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
-                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
-
-    def plot_network_graph(self, influenced=None, action_nodes=None, figsize=(14,10)):
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
         """
-
+        Draw the network graph.
+        This is a wrapper function for Graph.plot_network_graph,
+        which calculates positions if needed.
         """
-        if influenced is None:
-            influenced = np.zeros(len(self.agent_ids), dtype=int)
-
-        if action_nodes is None:
-            action_nodes = np.zeros(len(self.agent_ids), dtype=int)
-
-        if self.G is None:
+        # Make sure the graph object has been initialized:
+        if self.graph is None:
             self.update_network_graph()
+        # Pass parameters through to Graph.plot_network_graph, which updates as needed:
+        return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
 
-        # Set up color map
-        color_map = []
-        for node in (self.G.nodes - np.min(self.G.nodes)):
-            if influenced[node] and action_nodes[node]:
-                color_map.append('#dbb700')
-            elif influenced[node]:
-                color_map.append('#f45844')
-            elif action_nodes[node]:
-                color_map.append('#3dbd5d')
-            else:
-                color_map.append('#0098d8')
+    @property
+    def G(self):
+        """
+        Alias for the network graph property.
+        """
+        if self.graph is None:
+            return None
+        return self.graph.G
 
-        _, ax = plt.subplots(figsize=figsize)
-        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
-        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, ax=ax, connectionstyle='arc3, rad = 0.1')
+    @property
+    def T(self):
+        """
+        Alias for the transition matrix.
+        """
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.T
+
+    @property
+    def state_space(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.state_space
+
+    @property
+    def action_space(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.action_space
 
     @property
     def n_informed(self):
