@@ -281,6 +281,11 @@ class TransitionMatrix:
     A representation of the transition probabilities where:
     - the state space is each possible combination status values across agents and
     - the action space is each possible combination of agents selected for intervention.
+    Agents can become informed organically (from adjacent agents in the network)
+    or by being selected for an intervention. We assume the intervention stage happens
+    after then organic propagation (i.e. an agent selected for intervention
+    does not begin to influence neighbors until the next stage, unless they happened to
+    already be informed at the start of the stage, i.e. if the intervention was superfluous).
     """
 
     @classmethod
