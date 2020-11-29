@@ -601,8 +601,10 @@ class Graph:
 
         if not ax:
             _, ax = plt.subplots()
+        informed = [self.env.agents[agent_id].informed for agent_id in self.agent_ids]
+        node_color = list(np.where(informed, 'cornflowerblue', 'tomato'))
         nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
-        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, ax=ax, connectionstyle='arc3, rad = 0.1')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_color=node_color, node_size=400, connectionstyle='arc3, rad = 0.1', ax=ax)
 
         return ax
 
