@@ -354,7 +354,8 @@ class TransitionMatrix:
             # Enumerate states:
             states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
             # Remove unreachable states:
-            states = [np.array(state) for state in states if not np.any((state==True)&(informed==False))]
+            states = [np.array(state) for state in states]
+            states = [state for state in states if not np.any((state==False)&(informed==True))]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
@@ -405,16 +406,17 @@ class TransitionMatrix:
 
     def update(self):
 
-
-        # Build state and action space:
-        self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
-        self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
-
         # Build transitin matrix:
         if self.model=='exhaustive':
             
+            # Build state and action space:
+            self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
+            self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            
+            # Initialize transition matrix:
             self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
 
+            # Calculate transition probabilities:
             for i, action in enumerate(self.action_space):
                 for j, state1 in enumerate(self.state_space):
                     for k, state2 in enumerate(self.state_space):
@@ -468,43 +470,39 @@ class TransitionMatrix:
 
         elif self.model=='pruned':
             
-            # Get meaningful actions and reachable states:
-            n_selected = self.n_selected
-            current_state = self.env.state
-            useful_actions = TransitionMatrix.enumerate_actions(env=self.env, state=current_state, as_objects=False, n_selected=n_selected)
-            landing_states = TransitionMatrix.enumerate_states(env=self.env, state=current_state, as_objects=False)
-            starting_states = [current_state.vector]
+            # Build state and action space (limited to meaninfgul actions and reachable states):
+            self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
+            self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
 
             # Initialize transition matrix:
-            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
+            self.T = np.zeros((len(self.action_space), 1, len(self.state_space)))
             
-            for i, action in enumerate(useful_actions):
-                for j, state1 in enumerate(starting_states):
-                    for k, state2 in enumerate(landing_states):
+            for i, action in enumerate(self.action_space):
+                for j, state1 in enumerate([self.env.state.vector]):
 
-                        # Get state vector and influence matrix:
-                        probs = self.env.influence.matrix
+                    # Get state vector and influence matrix:
+                    probs = self.env.influence.matrix
 
-                        # Convert to numpy matrix (won't remain sparse during manipulation):
-                        probs = probs.toarray()
+                    # Convert to numpy matrix (won't remain sparse during manipulation):
+                    probs = probs.toarray()
 
-                        # Multiply by state column -- uninformed agents will not influence anyone:
-                        probs = probs * state1.reshape(-1,1)
+                    # Multiply by state column -- uninformed agents will not influence anyone:
+                    probs = probs * state1.reshape(-1,1)
 
-                        # Multiply by state row -- already informed agents will remain informed:
-                        probs = np.where(state1.reshape(1,-1),1,probs)
+                    # Multiply by state row -- already informed agents will remain informed:
+                    probs = np.where(state1.reshape(1,-1),1,probs)
 
-                        # Multiply by action row -- agents selected for intervention will be informed:
-                        probs = np.where(action.reshape(1,-1),1,probs)
+                    # Multiply by action row -- agents selected for intervention will be informed:
+                    probs = np.where(action.reshape(1,-1),1,probs)
 
-                        # Calculate how likely each agent is to be informed at the end of this step:
-                        probs = 1-np.prod(1-probs,axis=0)
+                    # Calculate how likely each agent is to be informed at the end of this step:
+                    probs = 1-np.prod(1-probs,axis=0)
                         
-                        # Flip the probability for agents who should end up not informed:
-                        probs = np.where(state2==True, probs, 1-probs)
+                    for k, state2 in enumerate(self.state_space):
                         
-                        # Get how likely the new state is by multiply agent probabilities:
-                        total_probability = np.prod( probs )
+                        # Flip the probability for agents who should end up not informed and
+                        # get total probability by multiplying how likely each new state is for each agent:
+                        total_probability = np.prod( np.where(state2==True, probs, 1-probs) )
                         
                         # Store result in matrix:
                         self.T[i,j,k] = total_probability
