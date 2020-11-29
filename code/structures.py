@@ -225,7 +225,7 @@ class InfluenceMatrix:
         # Set influence model:
         self.valid_models = {'default'}
         self.model = model
-        assert model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
+        assert self.model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
         self.agent_ids = agent_ids if agent_ids else self.env.agent_ids
@@ -274,6 +274,244 @@ class InfluenceMatrix:
     
     def toarray(self):
         return self.matrix.toarray()
+
+
+class TransitionMatrix:
+    """
+    A representation of the transition probabilities where:
+    - the state space is each possible combination status values across agents and
+    - the action space is each possible combination of agents selected for intervention.
+    """
+
+    @classmethod
+    def enumerate_actions(cls, env, n_selected=None, state=None, as_objects=False):
+        """
+        Enumerate all possible inteventions in a given environment.
+        env:
+            The simulation environment.
+        n_selected:
+            (int) The max number of inteventions (defaults to value set in environment).
+        state:
+            (State object) If specified, enumerates only actions that can be meaningfully taken at this state.
+            If False, exhaustively list all possible actions (including those that select already informed agents).
+        as_objects:
+            (bool) Optionally return a list of Action objects.
+            Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
+        """
+        # Get intervention size:
+        n_selected = n_selected if n_selected else env.intervention_size
+        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        if state is None:
+            # Consider all agents as candidates for intervention:
+            selections = list(itertools.combinations(env.agent_ids, n_selected))
+        elif state is not None:
+            # Get indices of uninformed agents:
+            try:
+                # If state is a State object:
+                informed = state.vector  # Extract vector of booleans.
+            except:
+                # If state is a vector of booleans:
+                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+                informed = state
+            candidates = np.array(env.agent_ids)[np.argwhere(informed==False)].flatten()
+            # Assume more inteventions are better than fewer:
+            n_selected = min(n_selected, len(candidates))
+            # Get all possible combinations:
+            selections = itertools.combinations(candidates, n_selected)
+        # Build an action object (which expects an list of agent_ids):
+        actions = [Action(env, selected=list(selection)) for selection in selections]
+        if not as_objects:
+            # Optionally extract the internal representation (vector of booleans):
+            actions = [action.vector for action in actions]
+        return actions
+
+    @classmethod
+    def enumerate_states(cls, env, state=None, actions=None, as_objects=False):
+        """
+        Enumerate the possible states for a given environment.
+        env:
+            The simulation environment.
+        state; actions:
+            (State object; list of Action objects) Optional.
+            If specified, enumerates only states that are reachable from the given state and actions.
+            If False, exhaustively list all possible states (including those that are uncreachable from the current state).
+        as_objects:
+            (bool) Optionally return a list of State objects.
+            Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
+        """
+        if (state is None) and (actions is None):
+            # Excaustive case:
+            states = list(itertools.product([0,1], repeat=len(env.agent_ids)))
+        elif (state is not None) and (actions is not None):
+            # Pruned case:
+            try:
+                # If state is a State object:
+                informed = state.vector  # Extract vector of booleans.
+            except:
+                # If state is a vector of booleans:
+                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+                informed = state
+            # Build list to collect states reachable by these actions:
+            states = []
+            try:
+                # If list of boolean vectors:
+                actions = np.vstack(actions)
+            except:
+                # If list of Action objects:
+                actions = np.vstack([action.vector for action in actions])
+            states = actions + informed.reshape(1,-1)
+            states = (states>=1).astype(bool)
+        else:
+            # Not defined:
+            raise ValueError("This function expects either both or neither of `state` and `actions` to be specified.")
+        if as_objects:
+            # Build an action object (using a dict of booleans):
+            states = [
+                State(env, informed={
+                    agent_id : val
+                    for agent_id,val in zip(env.agent_ids,state)
+                })
+                for state in states
+            ]
+        return states
+        
+
+    def __init__(self, env, model='exhaustive', n_selected=None, agent_ids=None):
+        """
+        env:
+            The simulation environment.
+        method:
+            Hyperparameter to control which model is used.
+            The 'exhaustive' mode enumerates all states and actions.
+            The 'pruned' mode limits enumeration to reachable states.
+        n_selected:
+            The (max) number of agents to select for each intervention.
+        agent_ids:
+            (Optional) List of agent_ids in the order they should be stored in the state/acton space.
+            If not provided, defaults to the order used by the environmnet.
+        """
+        self.env = env
+        # Set influence model:
+        self.valid_models = {'exhaustive','pruned'}
+        self.model = model if model is not None else 'pruned'
+        assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
+
+        # Maintain a list of agent_ids in the order the appear in the matrix:
+        self.agent_ids = agent_ids if (agent_ids is not None) else list(sorted(env.agents.keys()))
+
+        # Get intervention size:
+        n_selected = n_selected if n_selected else env.intervention_size
+        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        self.n_selected = n_selected
+
+        # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
+        self.T = None
+        self.state_space = None
+        self.action_space = None
+
+        # Initialize:
+        self.update()
+
+    def update(self):
+
+
+        # Build state and action space:
+        self.action_space = TransitionMatrix.enumerate_actions(env=self.env, n_selected=self.n_selected, as_objects=False)
+        self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+
+        # Build transitin matrix:
+        if self.model=='exhaustive':
+            
+            self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+
+            for i, actions in enumerate(self.action_space):
+                for j, state1 in enumerate(self.state_space):
+                    for k, state2 in enumerate(self.state_space):
+
+                        # Check that the new state is consistent with the action alone
+                        consistent = 0
+                        for action in actions:
+                            if state2[action] == 1:
+                                consistent += 1
+                            
+                        if consistent == self.n_selected:
+                        
+                            # Calculate the probabilities of influence occuring to each next state
+                            total_influence_prob = []
+                            consistency_check = 1
+
+                            for n_state, n_val in enumerate(state2):
+                                next_state_prob = []
+                                if n_state in actions:
+                                    next_state_prob.append(0)
+                                else:
+                                    for c_state, c_val in enumerate(state1):
+                                        if c_val == 1:
+
+                                            # Special case where the states are the same
+                                            if n_state == c_state: 
+
+                                                # Consistency check 
+                                                if n_val == 0:
+                                                    consistency_check = 0
+                                                    next_state_prob.append(1)
+                                                else:
+                                                    next_state_prob.append(0)
+                                            else:
+                                                next_state_prob.append(1 - self.env.influence.matrix[c_state, n_state])
+                                        else:
+                                            next_state_prob.append(1)
+
+                                prob_no_influence = np.prod(next_state_prob)
+                                prob_influence = 1 - prob_no_influence
+                                if n_val == 0:
+                                    total_influence_prob.append(prob_no_influence)
+                                else:
+                                    total_influence_prob.append(prob_influence)
+                        
+                            if consistency_check == 1:
+                                total_probability = np.prod(total_influence_prob)
+                            else:
+                                total_probability = 0
+                            self.T[i,j,k] = total_probability
+
+        elif self.model=='pruned':
+            
+            # Get meaningful actions and reachable states:
+            n_selected = self.n_selected
+            current_state = self.env.state
+            useful_actions = TransitionMatrix.enumerate_actions(env=self.env, n_selected=n_selected, state=current_state, as_objects=False)
+            landing_states = TransitionMatrix.enumerate_states(env=self.env, state=current_state, actions=useful_actions, as_objects=False)
+            starting_states = [current_state.vector]
+
+            # Initialize transition matrix:
+            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
+
+            raise NotImplementedError("TO DO.")
+            
+            for i, actions in enumerate(useful_actions):
+                for j, state1 in enumerate(starting_states):
+                    for k, state2 in enumerate(landing_states):
+
+                        # Get state vector and influence matrix:
+                        probs = self.env.influence.matrix
+
+                        # Convert to numpy matrix (won't remain sparse during manipulation):
+                        probs = probs.toarray()
+
+                        # Multiply by state column -- uninformed agents will not influence anyone:
+                        probs = probs * state.reshape(-1,1)
+
+                        # Multiply by state row -- already informed agents will remain informed:
+                        probs = np.where(state.reshape(1,-1),1,probs)
+
+                        # Calculate how likely each agent is to be informed at the end of this step:
+                        probs = 1-np.prod(1-probs,axis=0)
+
+        else:
+            raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
+
+        return self.T
 
 
 class Graph:
@@ -548,9 +786,7 @@ class Environment:
         self.graph = None
 
         # Transition Matrix
-        self.T = None
-        self.action_space = None
-        self.state_space = None
+        self.trans = None
 
         # Initialize:
         self.update()
@@ -565,7 +801,8 @@ class Environment:
         self.update_adjacency()
         self.update_influence()
         self.update_state()
-        self.update_network_graph()
+        #self.update_network_graph()
+        #self.update_transition_matrix()
 
     def update_agents(self):
         """
@@ -635,68 +872,17 @@ class Environment:
         # Update state (i.e. which agents are informed):
         self.state = State(self)
 
-    def update_transition_matrix(self, intervention_n=2):
+    def update_transition_matrix(self, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
-        intervention_n:
-            Number of agents being informed at each timestep
+        n_selected:
+            Number of agents being selected for intervention at each timestep.
+            If None, defaults to self.intervention_size.
+        model:
+            The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
-        self.action_space = list(itertools.combinations(self.agent_ids, intervention_n))
-        self.state_space = list(itertools.product([0,1], repeat=len(self.agent_ids)))
-
-        self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
-
-        for i, actions in enumerate(self.action_space):
-            for j, state1 in enumerate(self.state_space):
-                for k, state2 in enumerate(self.state_space):
-
-                    # Check that the new state is consistent with the action alone
-                    consistent = 0
-                    for action in actions:
-                        if state2[action] == 1:
-                            consistent += 1
-                        
-                    if consistent == intervention_n:
-                    
-                        # Calculate the probabilities of influence occuring to each next state
-                        total_influence_prob = []
-                        consistency_check = 1
-
-                        for n_state, n_val in enumerate(state2):
-                            next_state_prob = []
-                            if n_state in actions:
-                                next_state_prob.append(0)
-                            else:
-                                for c_state, c_val in enumerate(state1):
-                                    if c_val == 1:
-
-                                        # Special case where the states are the same
-                                        if n_state == c_state: 
-
-                                            # Consistency check 
-                                            if n_val == 0:
-                                                consistency_check = 0
-                                                next_state_prob.append(1)
-                                            else:
-                                                next_state_prob.append(0)
-                                        else:
-                                            next_state_prob.append(1 - self.influence.matrix[c_state, n_state])
-                                    else:
-                                        next_state_prob.append(1)
-
-                            prob_no_influence = np.prod(next_state_prob)
-                            prob_influence = 1 - prob_no_influence
-                            if n_val == 0:
-                                total_influence_prob.append(prob_no_influence)
-                            else:
-                                total_influence_prob.append(prob_influence)
-                    
-                        if consistency_check == 1:
-                            total_probability = np.prod(total_influence_prob)
-                        else:
-                            total_probability = 0
-                        self.T[i,j,k] = total_probability
+        self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
 
     def update_network_graph(self):
         """
@@ -723,6 +909,30 @@ class Environment:
         Alias for the network graph property.
         """
         return self.graph
+
+    @property
+    def T(self):
+        """
+        Alias for the transition matrix.
+        """
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.T
+
+    @property
+    def state_space(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.state_space
+
+    @property
+    def action_space(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.state_space
 
     @property
     def n_informed(self):
