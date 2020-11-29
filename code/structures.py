@@ -489,7 +489,7 @@ class TransitionMatrix:
 
             raise NotImplementedError("TO DO.")
             
-            for i, actions in enumerate(useful_actions):
+            for i, action in enumerate(useful_actions):
                 for j, state1 in enumerate(starting_states):
                     for k, state2 in enumerate(landing_states):
 
@@ -500,13 +500,25 @@ class TransitionMatrix:
                         probs = probs.toarray()
 
                         # Multiply by state column -- uninformed agents will not influence anyone:
-                        probs = probs * state.reshape(-1,1)
+                        probs = probs * state1.reshape(-1,1)
 
                         # Multiply by state row -- already informed agents will remain informed:
-                        probs = np.where(state.reshape(1,-1),1,probs)
+                        probs = np.where(state1.reshape(1,-1),1,probs)
+
+                        # Multiply by action row -- agents selected for intervention will be informed:
+                        probs = np.where(action.reshape(1,-1),1,probs)
 
                         # Calculate how likely each agent is to be informed at the end of this step:
                         probs = 1-np.prod(1-probs,axis=0)
+                        
+                        # Flip the probability for agents who should end up not informed:
+                        probs = np.where(state2==True, probs, 1-probs)
+                        
+                        # Get how likely the new state is by multiply agent probabilities:
+                        total_probability = np.prod( probs )
+                        
+                        # Store result in matrix:
+                        self.T[i,j,k] = total_probability
 
         else:
             raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
