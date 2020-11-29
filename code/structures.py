@@ -606,7 +606,7 @@ class Environment:
                             total_probability = 0
                         self.T[i,j,k] = total_probability
 
-    def update_network_graph(self, iterations=250):
+    def update_network_graph(self, iterations=18):
         """
 
         """
@@ -627,16 +627,34 @@ class Environment:
         self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
                 for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
 
-    def plot_network_graph(self):
+    def plot_network_graph(self, influenced=None, action_nodes=None, figsize=(14,10)):
         """
 
         """
+        if influenced is None:
+            influenced = np.zeros(len(self.agent_ids), dtype=int)
+
+        if action_nodes is None:
+            action_nodes = np.zeros(len(self.agent_ids), dtype=int)
+
         if self.G is None:
             self.update_network_graph()
 
-        _, ax = plt.subplots()
+        # Set up color map
+        color_map = []
+        for node in (self.G.nodes - np.min(self.G.nodes)):
+            if influenced[node] and action_nodes[node]:
+                color_map.append('#dbb700')
+            elif influenced[node]:
+                color_map.append('#f45844')
+            elif action_nodes[node]:
+                color_map.append('#3dbd5d')
+            else:
+                color_map.append('#0098d8')
+
+        _, ax = plt.subplots(figsize=figsize)
         nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
-        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, ax=ax, connectionstyle='arc3, rad = 0.1')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, ax=ax, connectionstyle='arc3, rad = 0.1')
 
     @property
     def n_informed(self):
