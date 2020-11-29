@@ -424,13 +424,13 @@ class TransitionMatrix:
             
             self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
 
-            for i, actions in enumerate(self.action_space):
+            for i, action in enumerate(self.action_space):
                 for j, state1 in enumerate(self.state_space):
                     for k, state2 in enumerate(self.state_space):
 
                         # Check that the new state is consistent with the action alone
                         consistent = 0
-                        for action_index, action_bool in enumerate(actions):
+                        for action_index, action_bool in enumerate(action):
                             if (action_bool == 1) and (state2[action_index] == 1):
                                 consistent += 1
                             
@@ -442,7 +442,7 @@ class TransitionMatrix:
 
                             for n_state, n_val in enumerate(state2):
                                 next_state_prob = []
-                                if actions[n_state]==True:
+                                if action[n_state]==True:
                                     next_state_prob.append(0)
                                 else:
                                     for c_state, c_val in enumerate(state1):
