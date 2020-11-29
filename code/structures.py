@@ -932,7 +932,7 @@ class Environment:
         if self.trans is None:
             return None
             #raise RuntimeError("self.update_transition_matrix has not been called.")
-        return self.trans.state_space
+        return self.trans.action_space
 
     @property
     def n_informed(self):
