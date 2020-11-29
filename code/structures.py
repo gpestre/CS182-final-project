@@ -551,9 +551,8 @@ class Environment:
         intervention_n:
             Number of agents being informed at each timestep
         """
-        self.action_space = list(itertools.combinations(self.agent_ids, intervention_n))
+        self.action_space = list(itertools.combinations(list(range(len(self.agent_ids))), intervention_n))
         self.state_space = list(itertools.product([0,1], repeat=len(self.agent_ids)))
-
         self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
 
         for i, actions in enumerate(self.action_space):
@@ -617,12 +616,12 @@ class Environment:
         # Create the Graph structure
         for agent in self.agents.values():
             for next_agent_id in agent.inner_circle:
-                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
-                self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
+                connection_strength = self.influence.matrix[(self.agent_ids.index(agent.id), self.agent_ids.index(next_agent_id))]
+                self.G.add_edge(agent.id, next_agent_id, val=connection_strength, edge_color='b')
 
             for next_agent in agent.outer_circle:
-                connection_strength = self.influence.matrix[(agent.id, next_agent_id)]
-                self.G.add_edge(agent.id, next_agent, val=connection_strength)
+                connection_strength = self.influence.matrix[(self.agent_ids.index(agent.id), self.agent_ids.index(next_agent_id))]
+                self.G.add_edge(agent.id, next_agent, val=connection_strength, edge_color='g')
 
         self.pos = nx.spring_layout(self.G, iterations=iterations)
         self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
