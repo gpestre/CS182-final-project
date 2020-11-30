@@ -519,7 +519,8 @@ class TransitionMatrix:
         else:
             raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
 
-        assert np.all( self.T.sum(axis=-1)==1 ), "Expected all rows to sum to 1."
+        sum_check = self.T.sum(axis=-1)
+        assert np.allclose( sum_check, np.ones(sum_check.shape), atol=1e-5), "Expected all rows to sum to 1."
 
         return self.T
 
@@ -540,6 +541,7 @@ class Graph:
         self.G = None
         self.pos = None
         self.edge_labels = None
+        self._edge_colors = None
 
         # Initialize:
         self.update_structure()
@@ -564,16 +566,19 @@ class Graph:
         
         # Build graph:
         self.G = nx.DiGraph()
+        self._edge_colors = []
 
         # Create the Graph structure
         for agent in self.env.agents.values():
             for next_agent_id in agent.inner_circle:
                 connection_strength = self.env.influence.matrix[(self.state_index_lookup[agent.id], self.state_index_lookup[next_agent_id])]
-                self.G.add_edge(agent.id, next_agent_id, val=connection_strength, edge_color='#DE3D83')
+                self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
+                self._edge_colors.append('#0f0a01')
 
-            for next_agent in agent.outer_circle:
+            for next_agent_id in agent.outer_circle:
                 connection_strength = self.env.influence.matrix[(self.state_index_lookup[agent.id], self.state_index_lookup[next_agent_id])]
-                self.G.add_edge(agent.id, next_agent, val=connection_strength, edge_color='black')
+                self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
+                self._edge_colors.append('#a5a6a9')
 
     def update_layout(self, iterations=None):
         """
@@ -590,7 +595,7 @@ class Graph:
 
         # Calculate positions and build edge labels:
         self.pos = nx.spring_layout(self.G, iterations=iterations)
-        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
+        self.edge_labels = dict([((node1, node2, ), f'{np.round(connection_data["val"],2)}\n\n{np.round(self.G.edges[(node2,node1)]["val"],2)}')
                 for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
 
     def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
@@ -601,7 +606,7 @@ class Graph:
         """
 
         # Update layout (and build graph) if needed:
-        if (self.pos is None) or (self.edge_labels is None):
+        if (self.pos is None) or (self.edge_labels is None) or (self._edge_colors is None):
             self.update_layout(iterations=iterations)
 
         if influenced is None:
@@ -629,7 +634,8 @@ class Graph:
             _, ax = plt.subplots(figsize=figsize)
         
         nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
-        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, ax=ax, connectionstyle='arc3, rad = 0.1')
+        nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, 
+                         edge_color=self._edge_colors, ax=ax, connectionstyle='arc3, rad = 0.1')
 
         return ax
 
