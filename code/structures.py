@@ -668,6 +668,16 @@ class State:
     def coerce(self, env, state):
         """
         Coerces the input to a State object.
+
+        Accepts several input formats:
+            - a State object.
+            - a boolean vector where each value corresponds to an agent in env.agent_ids.
+            - a list of informed agent_ids.
+            - a dictionary of booleans keyed by agent_ids.
+
+        Note: If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
+        We assume that if the vector is of the same length as the numer of agents and has only boolean-like
+        values, it is a boolean state vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
         """
         if isinstance(state, State):
             if env != state.env:
@@ -677,9 +687,6 @@ class State:
         elif isinstance(state, dict):
             return State(env=env, lookup=state)
         else:
-            # If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
-            # We assume that if the vector is of the same length as the state space and has only boolean-like
-            # values, it is a boolean vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
             bool_values = set([True,False,0,1,0.0,1.0])
             is_boolean = ( set(state) | bool_values ) == bool_values
             is_full_length = (len(state)==len(env.agent_ids))
@@ -762,7 +769,7 @@ class State:
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
     
     def copy(self):
-        return State(env=self.env, vector=self.vector)
+        return State(env=self.env, vector=self.vector.copy())
 
 
 class Action:
