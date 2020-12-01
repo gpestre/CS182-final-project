@@ -319,7 +319,7 @@ class TransitionMatrix:
             # Get all possible combinations:
             selections = itertools.combinations(candidates, n_selected)
         # Build an action object (which expects an list of agent_ids):
-        actions = [Action(env, selected=list(selection)) for selection in selections]
+        actions = [Action(env, selected_ids=list(selection)) for selection in selections]
         if not as_objects:
             # Optionally extract the internal representation (vector of booleans):
             actions = [action.vector for action in actions]
@@ -381,10 +381,7 @@ class TransitionMatrix:
         # Get boolean representation of state:
         state = State.coerce(env=env, state=state).vector  # Vector of booleans.
         # Get boolean representation of action:
-        try:
-            action = action.vector
-        except:
-            assert len(action)==len(env.agent_ids), f"Expect an Action object or a vector of length {len(env.agent_ids)}"
+        action = Action.coerce(env=env, action=action).vector  # Vector of booleans.
 
         # Get state vector and influence matrix:
         probs = env.influence.matrix
@@ -707,8 +704,7 @@ class State:
             A list of agent_ids (or agent objects) who are informed.
         lookup:
             A dict of booleans (keyed by agent_id) indicating which agents are informed.
-        At most one of the methods (vector, ids, lookup) should be specified.
-        If not provided, the current environment state is used.
+        Exactly one of the methods (vector, ids, lookup) should be specified.
         Providing a vector is fastest but it is not checked for validity.
         """
         self.env = env
@@ -737,13 +733,7 @@ class State:
                 self._vector[agent_index] = val
             assert len(self._lookup) == self.n_agents
         else:
-            # If no state is specified, copy current state:
-            if self.env.state is not None:
-                self._vector = self.env.state._vector
-                self._informed_ids = self.env.state._informed_ids
-                self._lookup = self.env.state._lookup
-            else:
-                self._vector = self.env.agent_ids
+            raise ValueError("Must specify `vector`, `selected_ids`, or `lookup`.")
         self.n_informed = sum(self.vector)
 
     @property
@@ -780,6 +770,38 @@ class Action:
     """
 
     @classmethod
+    def coerce(self, env, action):
+        """
+        Coerces the input to an Action object.
+
+        Accepts several input formats:
+            - an Action object.
+            - a boolean vector where each value corresponds to an agent in env.agent_ids.
+            - a list of selected agent_ids.
+            - a dictionary of booleans keyed by agent_ids.
+
+        Note: If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
+        We assume that if the vector is of the same length as the numer of agents and has only boolean-like
+        values, it is a boolean action vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
+        """
+        if isinstance(action, Action):
+            if env != action.env:
+                return Action(env=env, vector=action.vector)
+            else:
+                return action
+        elif isinstance(action, dict):
+            return Action(env=env, lookup=action)
+        else:
+            bool_values = set([True,False,0,1,0.0,1.0])
+            is_boolean = ( set(action) | bool_values ) == bool_values
+            is_full_length = (len(action)==len(env.agent_ids))
+            action = np.array(action)
+            if is_boolean and is_full_length:
+                return Action(env=env, vector=action)
+            else:
+                return Action(env=env, selected_ids=action)
+
+    @classmethod
     def sort_actions(cls, actions, state=None, method='random'):
         """
         Return a list of value,action tuples, sorted in descending order.
@@ -803,50 +825,75 @@ class Action:
         results = sorted(results, key=lambda pair: pair[0], reverse=True)
         return results
 
-
-    def __init__(self, env, selected, value=None):
+    def __init__(self, env, vector=None, selected_ids=None, lookup=None):
         """
+        An immutable representation of the action (i.e. which agents are selected, in the same order as env.agent_ids)
         env:
             The simulation environment.
-        selected:
-            A list of agent_ids selected for intevention or a dict of booleans keyed by agent_id.
-            Providing `selected` as a dict is faster but does not check key validity.
+        vector:
+            A boolean vector of selected status (one value for each agent in env.agent_id order).
+        selected_ids:
+            A list of agent_ids (or agent objects) who are selected.
+        lookup:
+            A dict of booleans (keyed by agent_id) indicating which agents are selected.
+        Exactly one of the methods (vector, ids, lookup) should be specified.
+        Providing a vector is fastest but it is not checked for validity.
         """
         self.env = env
-        self.selected = {agent_id:False for agent_id in env.agents.keys()}
-        if isinstance(selected, dict):
-            self.selected = selected  # Directly insert dict without checking it.
-        elif isinstance(selected, list):
-            for agent_id in selected:
-                self.selected[agent_id] = True
-        else:
-            raise ValueError("selected should be list or dict.")
         self.n_agents = len(self.env.agent_ids)
-        # Optionally assign estimated value of this intervention:
-        self.value = value
+        self._vector = np.repeat(False, self.n_agents)
+        self._selected_ids = None  # Built on demand.
+        self._lookup = None  # Built on demand.
+        if vector is not None:    
+            assert len(vector)==self.n_agents
+            self._vector = np.array(vector)
+        elif selected_ids is not None:
+            self._selected_ids = []
+            for agent_id in selected_ids:
+                try:
+                    agent_id = agent_id.id  # If Agent object.
+                except:
+                    pass  # If integer.
+                self._selected_ids.append(agent_id)
+                agent_index = self.env.agent_indices[agent_id]
+                self._vector[agent_index] = True
+        elif lookup is not None:
+            self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
+            for agent_id, val in lookup:
+                agent_index = self.env.agent_indices[agent_id]
+                self._lookup[agent_index] = val
+                self._vector[agent_index] = val
+            assert len(self._lookup) == self.n_agents
+        else:
+            raise ValueError("Must specify `vector`, `selected_ids`, or `lookup`.")
+        self.n_selected = sum(self.vector)
 
     @property
     def vector(self):
         """
         Return the action as a numpy boolean array in the same order as the adjacency matrix.
         """
-        selected = {agent_id for agent_id,val in self.selected.items() if val}
-        vector = np.array([(agent_id in selected) for agent_id in self.env.agent_ids])
-        return vector
+        return self._vector
 
     @property
-    def n_selected(self):
-        return sum(self.selected.values())
+    def selected_ids(self):
+        if self._selected_ids is None:
+            self._selected_ids = [agent_id for agent_id,val in zip(self.env.agent_ids,self._vector) if val]
+        return self._selected_ids
+
+    @property
+    def lookup(self):
+        if self._lookup is None:
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+        return self._lookup
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
     
     def copy(self):
-        return Action(self.env, self.selected)
+        return Action(env=self.env, vector=self.vector.copy())
 
     def get_value(self, state=None, method='random'):
-        if self.value:  # Return a manually set value if it exists.
-            return self.value
         if method=='random':  # For testing.
             value = self.env.random.uniform(10)
             value = np.round(value, 1)
