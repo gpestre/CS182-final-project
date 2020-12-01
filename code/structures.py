@@ -757,6 +757,10 @@ class State:
 
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
+
+    def __repr__(self):
+        # Note: An exact representation would need to include the environment.
+        return "State{}".format(list(self.vector))
     
     def copy(self):
         return State(env=self.env, vector=self.vector.copy())
@@ -889,6 +893,10 @@ class Action:
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
+
+    def __repr__(self):
+        # Note: An exact representation would need to include the environment.
+        return "Action{}".format(list(self.vector))
     
     def copy(self):
         return Action(env=self.env, vector=self.vector.copy())
