@@ -310,15 +310,10 @@ class TransitionMatrix:
             # Consider all agents as candidates for intervention:
             selections = list(itertools.combinations(env.agent_ids, n_selected))
         elif state is not None:
-            # Get indices of uninformed agents:
-            try:
-                # If state is a State object:
-                informed = state.vector  # Extract vector of booleans.
-            except:
-                # If state is a vector of booleans:
-                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
-                informed = state
-            candidates = np.array(env.agent_ids)[np.argwhere(informed==False)].flatten()
+            # Convert to State object (accepts various input formats):
+            state = State.coerce(env=env, state=state)
+            # Get agent_ids of uninformed agents:
+            candidates = np.array(env.agent_ids)[np.argwhere(state.vector==False)].flatten()
             # Assume more inteventions are better than fewer:
             n_selected = min(n_selected, len(candidates))
             # Get all possible combinations:
@@ -349,25 +344,23 @@ class TransitionMatrix:
             states = [np.array(state) for state in states]
         elif state is not None:
             # Pruned case:
-            try:
-                # If state is a State object:
-                informed = state.vector  # Extract vector of booleans.
-            except:
-                # If state is a vector of booleans:
-                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
-                informed = state
-            # Enumerate states:
+            # Convert to State object (accepts various input formats):
+            state = State.coerce(env=env, state=state)
+            # Enumerate states (as list of tuples) and convert to arrays:
             states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
-            # Remove unreachable states:
             states = [np.array(state) for state in states]
-            states = [state for state in states if not np.any((state==False)&(informed==True))]
+            # Remove unreachable states:
+            # A state is reachable if each agent meets at least one of these conditions:
+            #  - The agent is currently uninformed (i.e. either future status is possible)
+            #  - The agent is informed in the candidate state (which is possible regardless of current status).
+            states = [
+                candidate_state for candidate_state in states
+                if np.all( (state==False)|(candidate_state==True) )
+            ]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
-                State(env, informed={
-                    agent_id : val
-                    for agent_id,val in zip(env.agent_ids,state)
-                })
+                State(env=env, vector=state)
                 for state in states
             ]
         return states
@@ -386,10 +379,7 @@ class TransitionMatrix:
         """
 
         # Get boolean representation of state:
-        try:
-            state = state.vector
-        except:
-            assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+        state = State.coerce(env=env, state=state).vector  # Vector of booleans.
         # Get boolean representation of action:
         try:
             action = action.vector
@@ -674,50 +664,105 @@ class State:
     (i.e. whether or not each professional is informed).
     """
 
-    def __init__(self, env, informed=None):
+    @classmethod
+    def coerce(self, env, state):
         """
+        Coerces the input to a State object.
+        """
+        if isinstance(state, State):
+            if env != state.env:
+                return State(env=env, vector=state.vector)
+            else:
+                return state
+        elif isinstance(state, dict):
+            return State(env=env, lookup=state)
+        else:
+            # If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
+            # We assume that if the vector is of the same length as the state space and has only boolean-like
+            # values, it is a boolean vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
+            bool_values = set([True,False,0,1,0.0,1.0])
+            is_boolean = ( set(state) | bool_values ) == bool_values
+            is_full_length = (len(state)==len(env.agent_ids))
+            state = np.array(state)
+            if is_boolean and is_full_length:
+                return State(env=env, vector=state)
+            else:
+                return State(env=env, informed_ids=state)
+
+    def __init__(self, env, vector=None, informed_ids=None, lookup=None):
+        """
+        An immutable representation of the state (i.e. which agents are informed, in the same order as env.agent_ids)
         env:
             The simulation environment.
-        informed:
-            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
-            If not provided, constructed from current environment state.
-            Providing `informed` as a dict is faster but does not check key validity.
+        vector:
+            A boolean vector of informed status (one value for each agent in env.agent_id order).
+        informed_ids:
+            A list of agent_ids (or agent objects) who are informed.
+        lookup:
+            A dict of booleans (keyed by agent_id) indicating which agents are informed.
+        At most one of the methods (vector, ids, lookup) should be specified.
+        If not provided, the current environment state is used.
+        Providing a vector is fastest but it is not checked for validity.
         """
         self.env = env
-        self.informed = {agent_id:False for agent_id in env.agents.keys()}
-        if informed is None:
-            for agent_id, agent in env.agents.items():
-                self.informed[agent_id] = agent.informed
-        elif isinstance(informed, dict):
-            self.informed = informed  # Directly insert dict without checking it.
-        elif isinstance(informed, list):
-            for agent_id in informed:
-                self.informed[agent_id] = True
-        elif isinstance(informed, State):
-            for agent_id, val in informed.informed.items():
-                self.informed[agent_id] = val
-        else:
-            raise ValueError("informed should be list or dict.")
         self.n_agents = len(self.env.agent_ids)
+        self._vector = np.repeat(False, self.n_agents)
+        self._informed_ids = None  # Built on demand.
+        self._lookup = None  # Built on demand.
+        if vector is not None:    
+            assert len(vector)==self.n_agents
+            self._vector = np.array(vector)
+        elif informed_ids is not None:
+            self._informed_ids = []
+            for agent_id in informed_ids:
+                try:
+                    agent_id = agent_id.id  # If Agent object.
+                except:
+                    pass  # If integer.
+                self._informed_ids.append(agent_id)
+                agent_index = self.env.agent_indices[agent_id]
+                self._vector[agent_index] = True
+        elif lookup is not None:
+            self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
+            for agent_id, val in lookup:
+                agent_index = self.env.agent_indices[agent_id]
+                self._lookup[agent_index] = val
+                self._vector[agent_index] = val
+            assert len(self._lookup) == self.n_agents
+        else:
+            # If no state is specified, copy current state:
+            if self.env.state is not None:
+                self._vector = self.env.state._vector
+                self._informed_ids = self.env.state._informed_ids
+                self._lookup = self.env.state._lookup
+            else:
+                self._vector = self.env.agent_ids
+        self.n_informed = sum(self.vector)
 
     @property
     def vector(self):
         """
         Return the state as a numpy boolean array in the same order as the adjacency matrix.
         """
-        informed = {agent_id for agent_id,val in self.informed.items() if val}
-        vector = np.array([(agent_id in informed) for agent_id in self.env.agent_ids])
-        return vector
+        return self._vector
 
     @property
-    def n_informed(self):
-        return sum(self.informed.values())
+    def informed_ids(self):
+        if self._informed_ids is None:
+            self._informed_ids = [agent_id for agent_id,val in zip(self.env.agent_ids,self._vector) if val]
+        return self._informed_ids
+
+    @property
+    def lookup(self):
+        if self._lookup is None:
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+        return self._lookup
 
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
     
     def copy(self):
-        return State(self.env, self.informed)
+        return State(env=self.env, vector=self.vector)
 
 
 class Action:
@@ -869,6 +914,7 @@ class Environment:
         
         # Maintain a list of agent_ids in the order the appear in the matrix:
         self.agent_ids = agent_ids if agent_ids else list(sorted(self.agents.keys()))
+        self.agent_indices = {agent_id:agent_index for agent_index,agent_id in enumerate(self.agent_ids)}
 
         # Network state (set by update function):
         self.state = None  # Boolean indicators of which agents are informed.
@@ -948,24 +994,27 @@ class Environment:
         model = model if model is not None else self.influence_model
         self.influence = InfluenceMatrix(self, model=model, agent_ids=self.agent_ids)
 
-    def update_state(self, informed=None):
+    def update_state(self, new_state=None):
         """
         Build state object to reflect current agent states.
-        informed:
-            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
+        new_state:
+            A new state to update the agent states to.
             (Optional -- if not provided, agent states are left unchanged.)
         """
 
         # Apply specified state, if provided (otherwise keep current state):
-        if informed:
-            # Build a state object (which accepts `informed` in various formats):
-            new_state = State(self, informed)
+        if new_state is not None:
+            # Coerce to state object:
+            new_state = State.coerce(env=self, state=new_state)
             # Update agents in the environment to reflect requested state:
-            for agent_id, val in zip(self.agents, new_state.vector):
+            for agent_id, val in zip(self.agent_ids, new_state.vector):
                 self.agents[agent_id].informed = val
+        else:
+            new_state = [self.agents[agent_id].informed for agent_id in self.agent_ids]
+            new_state = State(env=self, vector=new_state)
 
         # Update state (i.e. which agents are informed):
-        self.state = State(self)
+        self.state = new_state
 
     def update_transition_matrix(self, n_selected=None, model=None):
         """
