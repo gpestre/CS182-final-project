@@ -211,7 +211,7 @@ class InfluenceMatrix:
     agnostic to the state/action history.
     """
 
-    def __init__(self, env, model='default', agent_ids=None):
+    def __init__(self, env, model=None, agent_ids=None):
         """
         env:
             The simulation environment.
@@ -224,7 +224,7 @@ class InfluenceMatrix:
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
-        self.model = model
+        self.model = model if model is not None else 'default'
         assert self.model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
@@ -281,6 +281,11 @@ class TransitionMatrix:
     A representation of the transition probabilities where:
     - the state space is each possible combination status values across agents and
     - the action space is each possible combination of agents selected for intervention.
+    Agents can become informed organically (from adjacent agents in the network)
+    or by being selected for an intervention. We assume the intervention stage happens
+    after then organic propagation (i.e. an agent selected for intervention
+    does not begin to influence neighbors until the next stage, unless they happened to
+    already be informed at the start of the stage, i.e. if the intervention was superfluous).
     """
 
     @classmethod
@@ -366,7 +371,50 @@ class TransitionMatrix:
                 for state in states
             ]
         return states
-        
+
+    @classmethod
+    def agent_probabilities(cls, env, state, action):
+        """
+        Given a starting state and an action, returns the probability that each agent is informed (in the landing state).
+        The return is a vector of floats, corresponding to the agents in env.agent_id order.
+        env:
+            The simulation environment.
+        state:
+            The starting state.
+        action:
+            The applied action.
+        """
+
+        # Get boolean representation of state:
+        try:
+            state = state.vector
+        except:
+            assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
+        # Get boolean representation of action:
+        try:
+            action = action.vector
+        except:
+            assert len(action)==len(env.agent_ids), f"Expect an Action object or a vector of length {len(env.agent_ids)}"
+
+        # Get state vector and influence matrix:
+        probs = env.influence.matrix
+
+        # Convert to numpy matrix (won't remain sparse during manipulation):
+        probs = probs.toarray()
+
+        # Multiply by state column -- uninformed agents will not influence anyone:
+        probs = np.where(state.reshape(-1,1), probs, 0)
+
+        # Multiply by state row -- already informed agents will remain informed:
+        probs = np.where(state.reshape(1,-1), 1, probs)
+
+        # Multiply by action row -- agents selected for intervention will be informed:
+        probs = np.where(action.reshape(1,-1), 1, probs)
+
+        # Calculate how likely each agent is to be informed at the end of this step:
+        probs = 1-np.prod(1-probs,axis=0)
+
+        return probs
 
     def __init__(self, env, model=None, n_selected=None, agent_ids=None):
         """
@@ -489,24 +537,9 @@ class TransitionMatrix:
             for i, action in enumerate(useful_actions):
                 for j, state1 in enumerate(starting_states):
 
-                    # Get state vector and influence matrix:
-                    probs = self.env.influence.matrix
-
-                    # Convert to numpy matrix (won't remain sparse during manipulation):
-                    probs = probs.toarray()
-
-                    # Multiply by state column -- uninformed agents will not influence anyone:
-                    probs = np.where(state1.reshape(-1,1), probs, 0)
-
-                    # Multiply by state row -- already informed agents will remain informed:
-                    probs = np.where(state1.reshape(1,-1), 1, probs)
-
-                    # Multiply by action row -- agents selected for intervention will be informed:
-                    probs = np.where(action.reshape(1,-1), 1, probs)
-
                     # Calculate how likely each agent is to be informed at the end of this step:
-                    probs = 1-np.prod(1-probs,axis=0)
-                        
+                    probs = TransitionMatrix.agent_probabilities(env=self.env, state=state1, action=action)
+                    
                     for k, state2 in enumerate(landing_states):
                         
                         # Flip the probability for agents who should end up not informed and
@@ -778,19 +811,52 @@ class Environment:
     The actions are defined by which combination of professionals is **selected** for intervention.
     """
 
-    def __init__(self, agents, agent_ids=None, seed=None):
+    def __init__(
+        self, agents, agent_ids=None, seed=None,
+        base_receptivity = 0.5,
+        base_persuasiveness = 0.5,
+        intervention_size = 100,
+        influence_model = None,
+        transition_model = None,
+    ):
         """
         agents:
             A list or dict (keyed by agent_id) of Agent objects.
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
             If not provided, defaults to sorted order of agent_ids.
+        seed:
+            (Optional) An integer seed for numpy random state.
+        
+        HYPERPARAMETERS:
+
+        base_receptivity:
+            (float between 0.0 and 1.0)
+            How receptive agents are when receiving information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        base_persuasiveness:
+            (float between 0.0 and 1.0)
+            How presuasive agents are when transimitting information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        intervention_size:
+            (int)
+            The default number of agents to select for intervention at each step.
+            (Under some transition models, actions may include fewer interventions if
+            the intervention_size is larger than the number of uninformed agents.)
+        influence_model:
+            (string: 'default')
+            [Defaults are handled in the InfluenceMatrix class.]
+        transition_model:
+            (string: 'exhaustive', 'exhaustive_fast', 'pruned')
+            [Defaults are handled in the TransitionMatrix class.]
         """
 
         # Hyperparameters:
-        self.base_receptivity = 0.5
-        self.base_persuasiveness = 0.5
-        self.intervention_size = 100  # How many interventions at each step?
+        self.base_receptivity = base_receptivity
+        self.base_persuasiveness = base_persuasiveness
+        self.intervention_size = intervention_size
+        self.influence_model = influence_model
+        self.transition_model = transition_model
 
         # Random state:
         self.seed = seed
@@ -808,6 +874,7 @@ class Environment:
         self.state = None  # Boolean indicators of which agents are informed.
         self.inner = None  # AdjacnecyMatrix for inner circle networks.
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
+        self.influence = None  # InfluenceMatrix.
 
         # Networks Graph
         self.graph = None
@@ -874,11 +941,12 @@ class Environment:
         self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
         self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
-    def update_influence(self):
+    def update_influence(self, model=None):
         """
         Rebuild agent adjacency matrix.
         """
-        self.influence = InfluenceMatrix(self, model='default', agent_ids=self.agent_ids)
+        model = model if model is not None else self.influence_model
+        self.influence = InfluenceMatrix(self, model=model, agent_ids=self.agent_ids)
 
     def update_state(self, informed=None):
         """
@@ -909,6 +977,7 @@ class Environment:
         model:
             The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
+        model = model if model is not None else self.transition_model
         self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
 
     def update_network_graph(self):
