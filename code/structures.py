@@ -1219,6 +1219,7 @@ class Environment:
         intervention_size = 100,
         influence_model = None,
         transition_model = None,
+        policy_model = None,
     ):
         """
         agents:
@@ -1250,6 +1251,9 @@ class Environment:
         transition_model:
             (string: 'exhaustive', 'exhaustive_fast', 'subset', 'pruned')
             [Defaults are handled in the TransitionMatrix class.]
+        policy_model:
+            (string: 'policy_evaluation')
+            [Defaults are handled in the Policy class.]
         """
 
         # Hyperparameters:
@@ -1258,6 +1262,7 @@ class Environment:
         self.intervention_size = intervention_size
         self.influence_model = influence_model
         self.transition_model = transition_model
+        self.policy_model = policy_model
 
         # Random state:
         self.seed = seed
@@ -1284,6 +1289,9 @@ class Environment:
         # Transition Matrix
         self.trans = None
 
+        # Policy
+        self.policy = None
+
         # Simulation state (updated at the beginning of each simulation step):
         self.step_count = None
         self.state_history = None
@@ -1304,6 +1312,7 @@ class Environment:
         self.update_state()
         #self.update_network_graph()
         #self.update_transition_matrix()
+        #self.update_policy()
         self.reset_simulation()
 
     def update_agents(self):
@@ -1412,6 +1421,14 @@ class Environment:
         model = model if model is not None else self.transition_model
         self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
 
+    def update_policy(self, model=None, *policy_args, **policy_kwargs):
+        """
+        model:
+            The model used to evaluate the policy.
+        """
+        model = model if model is not None else self.policy_model
+        self.policy = Policy(env=self, model=model, *policy_args, **policy_kwargs)
+
     def update_network_graph(self):
         """
         A graph representation of the agent influence network.
@@ -1456,7 +1473,10 @@ class Environment:
         for _ in range(n_steps):
             
             # Get action from policy:
-            action = Action(env=self, selected_ids=[])  # Placeholder action.
+            if self.policy:
+                action = self.policy.get_action(current_state)
+            else:
+                action = Action(env=self, selected_ids=[])  # Placeholder action.
             
             # Simulate organic transmission and apply intervention:
             probs = TransitionMatrix.agent_probabilities(env=self, state=current_state, action=action)
