@@ -483,6 +483,10 @@ class TransitionMatrix:
             self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
             self.landing_states = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
             self.starting_states = self.landing_states
+
+            # Add null action:
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            self.action_space = [null_action] + self.action_space
             
             # Initialize transition matrix:
             self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
@@ -555,6 +559,10 @@ class TransitionMatrix:
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
                 self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
                 self.starting_states = [self.starting_state.vector]
+
+            # Add null action:
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            self.action_space = [null_action] + self.action_space
 
             # Initialize transition matrix:
             self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
