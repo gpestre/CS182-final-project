@@ -345,17 +345,16 @@ class TransitionMatrix:
         elif state is not None:
             # Pruned case:
             # Convert to State object (accepts various input formats):
-            state = State.coerce(env=env, state=state)
+            current_state = State.coerce(env=env, state=state)
             # Enumerate states (as list of tuples) and convert to arrays:
             states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
             states = [np.array(state) for state in states]
             # Remove unreachable states:
-            # A state is reachable if each agent meets at least one of these conditions:
-            #  - The agent is currently uninformed (i.e. either future status is possible)
-            #  - The agent is informed in the candidate state (which is possible regardless of current status).
+            # A state is unreachable there is any agent who is informed in the current state
+            # would become uninformed in the candidate state.
             states = [
                 candidate_state for candidate_state in states
-                if np.all( (state==False)|(candidate_state==True) )
+                if not np.any( (current_state==True)&(candidate_state==False) )
             ]
         if as_objects:
             # Build an action object (using a dict of booleans):
