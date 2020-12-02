@@ -408,8 +408,10 @@ class TransitionMatrix:
             The simulation environment.
         method:
             Hyperparameter to control which model is used.
-            The 'exhaustive' mode enumerates all states and actions.
-            The 'pruned' mode limits enumeration to reachable states.
+            The 'exhaustive' mode enumerates all states and actions (using loops).
+            The 'exhaustive_fast' mode enumerates all states and actions (using matrix operations).
+            The 'reachable' mode limits enumeration to meaningful actions, from reachable states to reachable states.
+            The 'pruned' mode limits enumeration to meaningful actions, from current state to reachable states.
         n_selected:
             The (max) number of agents to select for each intervention.
         agent_ids:
@@ -418,7 +420,7 @@ class TransitionMatrix:
         """
         self.env = env
         # Set influence model:
-        self.valid_models = {'exhaustive','exhaustive_fast','pruned'}
+        self.valid_models = {'exhaustive','exhaustive_fast','reachable','pruned'}
         self.model = model if model is not None else 'exhaustive_fast'
         assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
 
@@ -500,13 +502,18 @@ class TransitionMatrix:
                                 total_probability = 0
                             self.T[i,j,k] = total_probability
 
-        elif (self.model=='exhaustive_fast') or (self.model=='pruned'):
+        elif self.model in {'exhaustive_fast','reachable','pruned'}:
             
-            # Build state and action space (possibly limiting to meaninfgul actions and reachable states):
+            # Build state and action space (possibly limiting to meaningful actions and reachable states):
             if self.model=='exhaustive_fast':
                  # Branch from all states (i.e. pass `state=None` to the enumeration function):
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=None, as_objects=False, n_selected=self.n_selected)
                 self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
+                starting_states = self.state_space
+            elif self.model=='reachable':
+                # Subset to reachable states and meaninful actions:
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
                 starting_states = self.state_space
             elif self.model=='pruned':
                 # Only branch from current state:
