@@ -958,6 +958,252 @@ class Action:
         return value
 
 
+class Policy:
+    
+    def __init__(self, env, trans=None, model=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        env:
+            The simulation environment.
+        trans:
+            (TransitionMatrix object)
+            If not specified, uses the environment's transition matrix.
+        method:
+            Method for determining best policy.
+        gamma:
+            Discount factor.
+        epsilon:
+            Convergence tolerance.
+        max_steps:
+            Max updates for value iteration.
+        progress:
+            How often to print progress (or None).
+        """
+        self.env = env
+        self.trans = self.env.trans if trans is None else trans
+        # Make sure transition matrix has been udpates:
+        if self.trans is None:
+            raise RuntimeError("env.update_transition_matrix was never called.")
+        # Get method:
+        valid_models = {'policy_iteration'}
+        self.model = 'policy_iteration' if model is None else model
+        assert self.model in valid_models, f"{self.model} is not a valid model."
+
+        self.updated = False
+
+        # Model-specific initialization:
+        if (self.model=='policy_iteration'):
+
+            if len(self.starting_states) != len(self.landing_states):
+                print(self.starting_states)
+                print(self.landing_states)
+                raise ValueError("Policy iteration requires same number of starting and landing states.")
+
+            # Solver properties:
+            self.gamma = 0.85 if gamma is None else gamma
+            self.epsilon = 0.01 if epsilon is None else epsilon
+            self.max_steps = float("+Inf") if max_steps is None else max_steps
+            self.progress = 20 if progress is None else progress
+            
+            # Solver variables:
+            self.values = self.initialize_values()
+            self.rewards = self.initialize_rewards()
+            self.policy = self.initialize_policy()
+
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+
+        # Initialize:
+        self.update()
+
+    @property
+    def starting_states(self):
+        return self.trans.starting_states
+
+    @property
+    def landing_states(self):
+        return self.trans.landing_states
+
+    @property
+    def state_space(self):
+        return self.trans.state_space
+
+    @property
+    def action_space(self):
+        return self.trans.action_space
+
+    @property
+    def T(self):
+        return self.trans.T
+
+    def encode_state(self, state_vector):
+        return self.trans.encode_state(state_vector)
+
+    def decode_state(self, state_index):
+        return self.trans.decode_state(state_index)
+
+    def encode_action(self, action_vector):
+        return self.trans.encode_action(action_vector)
+
+    def decode_action(self, action_index):
+        return self.trans.decode_action(action_index)
+
+    def initialize_values(self):
+        """
+        Value array for states (1D)
+        """
+        return np.zeros(len(self.state_space))
+
+    def initialize_rewards(self):
+        """
+        Create a R(s,'s) matrix (reward can be thought of as independent of action)
+        The reward is equal to the increase in the number of agents influenced
+        """
+        R = np.zeros((len(self.starting_states), len(self.landing_states)))
+        for i, state1 in enumerate(self.starting_states):
+            for j, state2 in enumerate(self.landing_states):
+                reward = np.max((0, (np.sum(state2) - np.sum(state1))))
+                R[i,j] = reward
+        return R
+
+    def initialize_policy(self):
+        """
+        Value array for states (1D)
+        """
+        return np.zeros(len(self.starting_states)).astype(int)
+
+    def calculate_policy_value(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        Perform policy estimation.
+        """
+
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        epsilon = self.epsilon if epsilon is None else epsilon
+        max_steps = self.max_steps if max_steps is None else max_steps
+        progress = self.progress if progress is None else progress
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+
+        # Evaluate:
+        new_values = values.copy()
+        counter = 0
+        while counter < max_steps:
+
+            deltas = []
+            for state_index, state in enumerate(self.state_space):
+                
+                # Extract the values relevant to the current state
+                cur_value = new_values[state_index]
+                cur_action_index = policy[state_index]
+                
+                transition_matrix = self.T[cur_action_index,state_index,:]
+                reward_matrix = rewards[state_index,:].reshape(-1,)
+
+                # Calculate the next value using Bellman update
+                next_value = np.matmul(transition_matrix, (reward_matrix + gamma * new_values))
+                
+                # Update the value matrix 
+                new_values[state_index] = next_value
+                deltas.append(abs(next_value - cur_value))
+
+            counter += 1
+            if isinstance(progress, int) and (progress>0) and (counter % progress == 0):
+                print(f"{counter} iterations run - max delta = {np.max(deltas)}")
+            if np.max(deltas) < epsilon:
+                break
+
+        return new_values
+
+    def calculate_policy_improvement(self, policy, values=None, rewards=None, gamma=None):
+        """
+        Perform policy improvement.
+        """
+
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+    
+        # Evaluate:
+        stable_policy = True
+        new_policy = policy.copy()
+        for state_index, state in enumerate(self.state_space):
+
+            old_policy = policy.copy()
+
+            # Calculate the value of taking a specific action followed by the
+            # original policy
+            action_values = []
+            for action_index, action in enumerate(self.action_space):
+                action_value = np.matmul(self.T[action_index, state_index, :], 
+                                        (rewards[state_index,:] + gamma * values))
+                action_values.append(action_value)
+            
+            best_action = np.argmax(action_values)
+
+            # Update the policy
+            new_policy[state_index] = best_action
+
+            if new_policy[state_index] != old_policy[state_index]:
+                stable_policy = False
+
+        return new_policy, stable_policy
+
+    def policy_iteration(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        Perform policy iteration.
+        """
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        epsilon = self.epsilon if epsilon is None else epsilon
+        max_steps = self.max_steps if max_steps is None else max_steps
+        progress = self.progress if progress is None else progress
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+
+        # Evaluate:
+        stable = False
+        new_policy = policy.copy()
+        new_values = values.copy()
+        while stable == False:
+            new_values = self.calculate_policy_value(
+                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
+                epsilon=epsilon, max_steps=max_steps, progress=progress
+            )
+            new_policy, stable = self.calculate_policy_improvement(
+                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
+            )
+
+        return new_policy     
+
+    def update(self):
+        """
+        Recalculate policy.
+        """
+        if (self.model=='policy_iteration'):
+            self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        # Set flag:
+        self.updated = True
+
+    def get_action(self, state):
+        """
+        Recomend action based on policy.
+        """
+        # Check flag:
+        if not self.updated:
+            raise RuntimeError("Policy has not been updated.")
+        if (self.model=='policy_iteration'):
+            state_index = self.encode_state(state_vector=state)
+            action_index = self.policy[state_index]
+            return self.action_space[action_index]
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+
 class Environment:
 
     """
