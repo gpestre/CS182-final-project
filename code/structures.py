@@ -1038,6 +1038,24 @@ class Environment:
                 agent.receptivity = self.base_receptivity
             if agent.persuasiveness is None:
                 agent.persuasiveness = self.base_persuasiveness
+            # Make sure inner circle is a list of agent_ids not objects:
+            inner_circle = []
+            for other_agent_id in agent.inner_circle:
+                try:
+                    other_agent_id = other_agent_id.id
+                except:
+                    pass
+                inner_circle.append(other_agent_id)
+            agent.inner_circle = sorted(set(inner_circle))
+            # Make sure inner circle is a list of agent_ids not objects:
+            outer_circle = []
+            for other_agent_id in agent.outer_circle:
+                try:
+                    other_agent_id = other_agent_id.id
+                except:
+                    pass
+                outer_circle.append(other_agent_id)
+            agent.outer_circle = sorted(set(outer_circle))
 
     def update_workplaces(self):
         """
