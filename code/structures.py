@@ -402,16 +402,20 @@ class TransitionMatrix:
 
         return probs
 
-    def __init__(self, env, model=None, n_selected=None, agent_ids=None):
+    def __init__(self, env, starting_state=None, model=None, n_selected=None, agent_ids=None):
         """
         env:
             The simulation environment.
-        method:
+        model:
             Hyperparameter to control which model is used.
             The 'exhaustive' mode enumerates all states and actions (using loops).
             The 'exhaustive_fast' mode enumerates all states and actions (using matrix operations).
             The 'reachable' mode limits enumeration to meaningful actions, from reachable states to reachable states.
             The 'pruned' mode limits enumeration to meaningful actions, from current state to reachable states.
+        starting_state:
+            (Optional) The state from which to build this TransitionMatrix.
+            This parameter is ignored for exhaustive models.
+            For models that use this parameter, the current environment state is used if none is specified.
         n_selected:
             The (max) number of agents to select for each intervention.
         agent_ids:
@@ -419,6 +423,7 @@ class TransitionMatrix:
             If not provided, defaults to the order used by the environmnet.
         """
         self.env = env
+        self.starting_state = env.state if starting_state is None else State.coerce(env=env, state=starting_state)
         # Set influence model:
         self.valid_models = {'exhaustive','exhaustive_fast','reachable','pruned'}
         self.model = model if model is not None else 'exhaustive_fast'
@@ -512,14 +517,14 @@ class TransitionMatrix:
                 starting_states = self.state_space
             elif self.model=='reachable':
                 # Subset to reachable states and meaninful actions:
-                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
                 starting_states = self.state_space
             elif self.model=='pruned':
                 # Only branch from current state:
-                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
-                starting_states = [self.env.state.vector]
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
+                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
+                starting_states = [self.starting_state.vector]
             # Common to both methods:
             useful_actions = self.action_space
             landing_states = self.state_space
@@ -682,7 +687,7 @@ class State:
         We assume that if the vector is of the same length as the numer of agents and has only boolean-like
         values, it is a boolean state vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
         """
-        if isinstance(state, State):
+        if hasattr(state, 'vector') and hasattr(state, 'n_informed'):  # State object.
             if env != state.env:
                 return State(env=env, vector=state.vector)
             else:
@@ -794,7 +799,7 @@ class Action:
         We assume that if the vector is of the same length as the numer of agents and has only boolean-like
         values, it is a boolean action vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
         """
-        if isinstance(action, Action):
+        if hasattr(action, 'vector') and hasattr(action, 'n_selected'):  # Action object.
             if env != action.env:
                 return Action(env=env, vector=action.vector)
             else:
@@ -1084,10 +1089,13 @@ class Environment:
         # Update state (i.e. which agents are informed):
         self.state = new_state
 
-    def update_transition_matrix(self, n_selected=None, model=None):
+    def update_transition_matrix(self, starting_state=None, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
+        starting_state:
+            The state from which to branch (not applicable for exhaustive models).
+        
         n_selected:
             Number of agents being selected for intervention at each timestep.
             If None, defaults to self.intervention_size.
@@ -1095,7 +1103,7 @@ class Environment:
             The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
         model = model if model is not None else self.transition_model
-        self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
+        self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
 
     def update_network_graph(self):
         """
