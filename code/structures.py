@@ -1249,7 +1249,7 @@ class Environment:
             (string: 'default')
             [Defaults are handled in the InfluenceMatrix class.]
         transition_model:
-            (string: 'exhaustive', 'exhaustive_fast', 'subset', 'pruned')
+            (string: 'exhaustive', 'exhaustive_fast', 'reachable', 'pruned')
             [Defaults are handled in the TransitionMatrix class.]
         policy_model:
             (string: 'policy_evaluation')
