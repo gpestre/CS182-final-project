@@ -621,8 +621,14 @@ class Graph:
 
         # Calculate positions and build edge labels:
         self.pos = nx.spring_layout(self.G, iterations=iterations)
-        self.edge_labels = dict([((node1, node2, ), f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}')
-                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
+        self.edge_labels = dict()
+        for node1, node2, connection_data in self.G.edges(data=True):
+            if self.pos[node1][0] > self.pos[node2][0]:
+                try:
+                    self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
+                except:
+                    pass
+                 
 
     def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
         """
