@@ -365,7 +365,7 @@ class TransitionMatrix:
         return states
 
     @classmethod
-    def agent_probabilities(cls, env, state, action):
+    def agent_probabilities(cls, env, state, action=None):
         """
         Given a starting state and an action, returns the probability that each agent is informed (in the landing state).
         The return is a vector of floats, corresponding to the agents in env.agent_id order.
@@ -374,13 +374,11 @@ class TransitionMatrix:
         state:
             The starting state.
         action:
-            The applied action.
+            The applied action (or None to get only the effect of organic transtion).
         """
 
         # Get boolean representation of state:
         state = State.coerce(env=env, state=state).vector  # Vector of booleans.
-        # Get boolean representation of action:
-        action = Action.coerce(env=env, action=action).vector  # Vector of booleans.
 
         # Get state vector and influence matrix:
         probs = env.influence.matrix
@@ -394,8 +392,14 @@ class TransitionMatrix:
         # Multiply by state row -- already informed agents will remain informed:
         probs = np.where(state.reshape(1,-1), 1, probs)
 
-        # Multiply by action row -- agents selected for intervention will be informed:
-        probs = np.where(action.reshape(1,-1), 1, probs)
+        # Apply action if applicable:
+        if action is not None:
+
+            # Get boolean representation of action:
+            action = Action.coerce(env=env, action=action).vector  # Vector of booleans.
+
+            # Multiply by action row -- agents selected for intervention will be informed:
+            probs = np.where(action.reshape(1,-1), 1, probs)
 
         # Calculate how likely each agent is to be informed at the end of this step:
         probs = 1-np.prod(1-probs,axis=0)
