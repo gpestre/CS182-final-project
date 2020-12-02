@@ -446,6 +446,8 @@ class TransitionMatrix:
         self.landing_states = None  # Aliased by landing_states.
         self.action_space = None
         self.starting_states = None  # May or may not be the full action space -- depends on model.
+        self.state_index_lookup = None
+        self.action_index_lookup = None
 
         # Initialize:
         self.update()
@@ -457,6 +459,20 @@ class TransitionMatrix:
     @state_space.setter
     def state_space(self, state_space):
         self.landing_states = state_space
+
+    def encode_state(self, state_vector):
+        state_vector = State.coerce(self.env, state=state_vector).vector
+        return self.state_index_lookup[tuple(state_vector)]
+
+    def decode_state(self, state_index):
+        return self.state_space[state_index]
+
+    def encode_action(self, action_vector):
+        action_vector = Action.coerce(self.env, action=action_vector).vector
+        return self.action_index_lookup[tuple(action_vector)]
+
+    def decode_action(self, action_index):
+        return self.action_space[action_index]
 
     def update(self):
 
@@ -562,6 +578,10 @@ class TransitionMatrix:
             raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
 
         assert np.all( self.T.sum(axis=-1)==1 ), "Expected all rows to sum to 1."
+
+        # Create reverse lookups:
+        self.state_index_lookup = {tuple(state_vector):state_index for state_index,state_vector in enumerate(self.state_space)}
+        self.action_index_lookup = {tuple(action_vector):action_index for action_index,action_vector in enumerate(self.action_space)}
 
         return self.T
 
