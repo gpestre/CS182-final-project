@@ -1011,6 +1011,11 @@ class Environment:
         # Transition Matrix
         self.trans = None
 
+        # Simulation state (updated at the beginning of each simulation step):
+        self.step_count = None
+        self.state_history = None
+        self.action_history = None
+
         # Initialize:
         self.update()
 
@@ -1026,6 +1031,7 @@ class Environment:
         self.update_state()
         #self.update_network_graph()
         #self.update_transition_matrix()
+        self.reset_simulation()
 
     def update_agents(self):
         """
@@ -1151,6 +1157,57 @@ class Environment:
             self.update_network_graph()
         # Pass parameters through to Graph.plot_network_graph, which updates as needed:
         return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
+
+    def reset_simulation(self):
+        """
+        Clear state and action histories.
+        """
+        self.step_count = 0
+        self.state_history = []
+        self.action_history = []
+
+    def simulate_steps(self, n_steps=1, dry_run=False):
+        """
+        Simulate one step of information propagation.
+        apply:
+            Whether or not to apply the new state.
+            Applies the new states and updates histories (and returns them).
+            Returns a state_history, action_history, landing_state tuple.
+            Also applies them to the environment, unless dry_run=True.
+        """
+        
+        step_count = 0
+        state_history = []
+        action_history = []
+        current_state = self.state.copy()
+        for _ in range(n_steps):
+            
+            # Get action from policy:
+            action = Action(env=self, selected_ids=[])  # Placeholder action.
+            
+            # Simulate organic transmission and apply intervention:
+            probs = TransitionMatrix.agent_probabilities(env=self, state=current_state, action=action)
+
+            # Simulate an outcome for each agent:
+            landing_state = self.random.binomial(n=1, p=probs).astype(bool)
+            landing_state = State(env=self, vector=landing_state)
+            
+            # Store results:
+            step_count += 1
+            state_history.append(current_state)
+            action_history.append(action)
+            current_state = landing_state
+
+        # Update history and apply new state:
+        if not dry_run:
+            self.step_count += step_count
+            self.state_history.extend(state_history)
+            self.action_history.extend(action_history)
+            self.update_state(new_state=landing_state)
+
+        return state_history, action_history, landing_state
+
+
 
     @property
     def G(self):
