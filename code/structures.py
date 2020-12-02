@@ -443,11 +443,20 @@ class TransitionMatrix:
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.T = None
-        self.state_space = None
+        self.landing_states = None  # Aliased by landing_states.
         self.action_space = None
+        self.starting_states = None  # May or may not be the full action space -- depends on model.
 
         # Initialize:
         self.update()
+
+    @property
+    def state_space(self):
+        return self.landing_states
+
+    @state_space.setter
+    def state_space(self, state_space):
+        self.landing_states = state_space
 
     def update(self):
 
@@ -456,15 +465,16 @@ class TransitionMatrix:
             
             # Build state and action space:
             self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
-            self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            self.landing_states = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            self.starting_states = self.landing_states
             
             # Initialize transition matrix:
-            self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+            self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
 
             # Calculate transition probabilities:
             for i, action in enumerate(self.action_space):
-                for j, state1 in enumerate(self.state_space):
-                    for k, state2 in enumerate(self.state_space):
+                for j, state1 in enumerate(self.starting_states):
+                    for k, state2 in enumerate(self.landing_states):
 
                         # Check that the new state is consistent with the action alone
                         both_true = action & state2
@@ -517,32 +527,29 @@ class TransitionMatrix:
             if self.model=='exhaustive_fast':
                  # Branch from all states (i.e. pass `state=None` to the enumeration function):
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=None, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
-                starting_states = self.state_space
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
+                self.starting_states = self.landing_states
             elif self.model=='reachable':
                 # Subset to reachable states and meaninful actions:
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
-                starting_states = self.state_space
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
+                self.starting_states = self.landing_states
             elif self.model=='pruned':
                 # Only branch from current state:
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
-                starting_states = [self.starting_state.vector]
-            # Common to both methods:
-            useful_actions = self.action_space
-            landing_states = self.state_space
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
+                self.starting_states = [self.starting_state.vector]
 
             # Initialize transition matrix:
-            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
+            self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
             
-            for i, action in enumerate(useful_actions):
-                for j, state1 in enumerate(starting_states):
+            for i, action in enumerate(self.action_space):
+                for j, state1 in enumerate(self.starting_states):
 
                     # Calculate how likely each agent is to be informed at the end of this step:
                     probs = TransitionMatrix.agent_probabilities(env=self.env, state=state1, action=action)
                     
-                    for k, state2 in enumerate(landing_states):
+                    for k, state2 in enumerate(self.landing_states):
                         
                         # Flip the probability for agents who should end up not informed and
                         # get total probability by multiplying how likely each new state is for each agent:
@@ -735,7 +742,7 @@ class State:
         self._lookup = None  # Built on demand.
         if vector is not None:    
             assert len(vector)==self.n_agents
-            self._vector = np.array(vector)
+            self._vector = np.array(vector, dtype=bool)
         elif informed_ids is not None:
             self._informed_ids = []
             for agent_id in informed_ids:
@@ -871,7 +878,7 @@ class Action:
         self._lookup = None  # Built on demand.
         if vector is not None:    
             assert len(vector)==self.n_agents
-            self._vector = np.array(vector)
+            self._vector = np.array(vector, dtype=bool)
         elif selected_ids is not None:
             self._selected_ids = []
             for agent_id in selected_ids:
@@ -1227,6 +1234,20 @@ class Environment:
             return None
             #raise RuntimeError("self.update_transition_matrix has not been called.")
         return self.trans.T
+
+    @property
+    def landing_states(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.landing_states
+
+    @property
+    def starting_states(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.starting_states
 
     @property
     def state_space(self):
