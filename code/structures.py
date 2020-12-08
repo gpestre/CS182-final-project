@@ -211,7 +211,7 @@ class InfluenceMatrix:
     agnostic to the state/action history.
     """
 
-    def __init__(self, env, model='default', agent_ids=None):
+    def __init__(self, env, model=None, agent_ids=None):
         """
         env:
             The simulation environment.
@@ -224,7 +224,7 @@ class InfluenceMatrix:
         self.env = env
         # Set influence model:
         self.valid_models = {'default'}
-        self.model = model
+        self.model = model if model is not None else 'default'
         assert self.model in self.valid_models, f"{model} is not a valid model: {self.valid_models}"
 
         # Maintain a list of agent_ids in the order the appear in the matrix:
@@ -281,6 +281,11 @@ class TransitionMatrix:
     A representation of the transition probabilities where:
     - the state space is each possible combination status values across agents and
     - the action space is each possible combination of agents selected for intervention.
+    Agents can become informed organically (from adjacent agents in the network)
+    or by being selected for an intervention. We assume the intervention stage happens
+    after then organic propagation (i.e. an agent selected for intervention
+    does not begin to influence neighbors until the next stage, unless they happened to
+    already be informed at the start of the stage, i.e. if the intervention was superfluous).
     """
 
     @classmethod
@@ -305,21 +310,16 @@ class TransitionMatrix:
             # Consider all agents as candidates for intervention:
             selections = list(itertools.combinations(env.agent_ids, n_selected))
         elif state is not None:
-            # Get indices of uninformed agents:
-            try:
-                # If state is a State object:
-                informed = state.vector  # Extract vector of booleans.
-            except:
-                # If state is a vector of booleans:
-                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
-                informed = state
-            candidates = np.array(env.agent_ids)[np.argwhere(informed==False)].flatten()
+            # Convert to State object (accepts various input formats):
+            state = State.coerce(env=env, state=state)
+            # Get agent_ids of uninformed agents:
+            candidates = np.array(env.agent_ids)[np.argwhere(state.vector==False)].flatten()
             # Assume more inteventions are better than fewer:
             n_selected = min(n_selected, len(candidates))
             # Get all possible combinations:
             selections = itertools.combinations(candidates, n_selected)
         # Build an action object (which expects an list of agent_ids):
-        actions = [Action(env, selected=list(selection)) for selection in selections]
+        actions = [Action(env, selected_ids=list(selection)) for selection in selections]
         if not as_objects:
             # Optionally extract the internal representation (vector of booleans):
             actions = [action.vector for action in actions]
@@ -344,38 +344,82 @@ class TransitionMatrix:
             states = [np.array(state) for state in states]
         elif state is not None:
             # Pruned case:
-            try:
-                # If state is a State object:
-                informed = state.vector  # Extract vector of booleans.
-            except:
-                # If state is a vector of booleans:
-                assert len(state)==len(env.agent_ids), f"Expect a State object or a vector of length {len(env.agent_ids)}"
-                informed = state
-            # Enumerate states:
+            # Convert to State object (accepts various input formats):
+            current_state = State.coerce(env=env, state=state)
+            # Enumerate states (as list of tuples) and convert to arrays:
             states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
-            # Remove unreachable states:
             states = [np.array(state) for state in states]
-            states = [state for state in states if not np.any((state==False)&(informed==True))]
+            # Remove unreachable states:
+            # A state is unreachable there is any agent who is informed in the current state
+            # would become uninformed in the candidate state.
+            states = [
+                candidate_state for candidate_state in states
+                if not np.any( (current_state==True)&(candidate_state==False) )
+            ]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
-                State(env, informed={
-                    agent_id : val
-                    for agent_id,val in zip(env.agent_ids,state)
-                })
+                State(env=env, vector=state)
                 for state in states
             ]
         return states
-        
 
-    def __init__(self, env, model=None, n_selected=None, agent_ids=None):
+    @classmethod
+    def agent_probabilities(cls, env, state, action=None):
+        """
+        Given a starting state and an action, returns the probability that each agent is informed (in the landing state).
+        The return is a vector of floats, corresponding to the agents in env.agent_id order.
+        env:
+            The simulation environment.
+        state:
+            The starting state.
+        action:
+            The applied action (or None to get only the effect of organic transtion).
+        """
+
+        # Get boolean representation of state:
+        state = State.coerce(env=env, state=state).vector  # Vector of booleans.
+
+        # Get state vector and influence matrix:
+        probs = env.influence.matrix
+
+        # Convert to numpy matrix (won't remain sparse during manipulation):
+        probs = probs.toarray()
+
+        # Multiply by state column -- uninformed agents will not influence anyone:
+        probs = np.where(state.reshape(-1,1), probs, 0)
+
+        # Multiply by state row -- already informed agents will remain informed:
+        probs = np.where(state.reshape(1,-1), 1, probs)
+
+        # Apply action if applicable:
+        if action is not None:
+
+            # Get boolean representation of action:
+            action = Action.coerce(env=env, action=action).vector  # Vector of booleans.
+
+            # Multiply by action row -- agents selected for intervention will be informed:
+            probs = np.where(action.reshape(1,-1), 1, probs)
+
+        # Calculate how likely each agent is to be informed at the end of this step:
+        probs = 1-np.prod(1-probs,axis=0)
+
+        return probs
+
+    def __init__(self, env, starting_state=None, model=None, n_selected=None, agent_ids=None):
         """
         env:
             The simulation environment.
-        method:
+        model:
             Hyperparameter to control which model is used.
-            The 'exhaustive' mode enumerates all states and actions.
-            The 'pruned' mode limits enumeration to reachable states.
+            The 'exhaustive' mode enumerates all states and actions (using loops).
+            The 'exhaustive_fast' mode enumerates all states and actions (using matrix operations).
+            The 'reachable' mode limits enumeration to meaningful actions, from reachable states to reachable states.
+            The 'pruned' mode limits enumeration to meaningful actions, from current state to reachable states.
+        starting_state:
+            (Optional) The state from which to build this TransitionMatrix.
+            This parameter is ignored for exhaustive models.
+            For models that use this parameter, the current environment state is used if none is specified.
         n_selected:
             The (max) number of agents to select for each intervention.
         agent_ids:
@@ -383,8 +427,9 @@ class TransitionMatrix:
             If not provided, defaults to the order used by the environmnet.
         """
         self.env = env
+        self.starting_state = env.state if starting_state is None else State.coerce(env=env, state=starting_state)
         # Set influence model:
-        self.valid_models = {'exhaustive','exhaustive_fast','pruned'}
+        self.valid_models = {'exhaustive','exhaustive_fast','reachable','pruned'}
         self.model = model if model is not None else 'exhaustive_fast'
         assert self.model in self.valid_models, f"{model} is not a valid transition model: {self.valid_models}"
 
@@ -398,11 +443,36 @@ class TransitionMatrix:
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
         self.T = None
-        self.state_space = None
+        self.landing_states = None  # Aliased by landing_states.
         self.action_space = None
+        self.starting_states = None  # May or may not be the full action space -- depends on model.
+        self.state_index_lookup = None
+        self.action_index_lookup = None
 
         # Initialize:
         self.update()
+
+    @property
+    def state_space(self):
+        return self.landing_states
+
+    @state_space.setter
+    def state_space(self, state_space):
+        self.landing_states = state_space
+
+    def encode_state(self, state_vector):
+        state_vector = State.coerce(self.env, state=state_vector).vector
+        return self.state_index_lookup[tuple(state_vector)]
+
+    def decode_state(self, state_index):
+        return self.state_space[state_index]
+
+    def encode_action(self, action_vector):
+        action_vector = Action.coerce(self.env, action=action_vector).vector
+        return self.action_index_lookup[tuple(action_vector)]
+
+    def decode_action(self, action_index):
+        return self.action_space[action_index]
 
     def update(self):
 
@@ -411,15 +481,20 @@ class TransitionMatrix:
             
             # Build state and action space:
             self.action_space = TransitionMatrix.enumerate_actions(env=self.env, as_objects=False, n_selected=self.n_selected)
-            self.state_space = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            self.landing_states = TransitionMatrix.enumerate_states(env=self.env, as_objects=False)
+            self.starting_states = self.landing_states
+
+            # Add null action:
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            self.action_space = [null_action] + self.action_space
             
             # Initialize transition matrix:
-            self.T = np.zeros((len(self.action_space), len(self.state_space), len(self.state_space)))
+            self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
 
             # Calculate transition probabilities:
             for i, action in enumerate(self.action_space):
-                for j, state1 in enumerate(self.state_space):
-                    for k, state2 in enumerate(self.state_space):
+                for j, state1 in enumerate(self.starting_states):
+                    for k, state2 in enumerate(self.landing_states):
 
                         # Check that the new state is consistent with the action alone
                         both_true = action & state2
@@ -466,48 +541,39 @@ class TransitionMatrix:
                                 total_probability = 0
                             self.T[i,j,k] = total_probability
 
-        elif (self.model=='exhaustive_fast') or (self.model=='pruned'):
+        elif self.model in {'exhaustive_fast','reachable','pruned'}:
             
-            # Build state and action space (possibly limiting to meaninfgul actions and reachable states):
+            # Build state and action space (possibly limiting to meaningful actions and reachable states):
             if self.model=='exhaustive_fast':
                  # Branch from all states (i.e. pass `state=None` to the enumeration function):
                 self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=None, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
-                starting_states = self.state_space
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=None, as_objects=False)
+                self.starting_states = self.landing_states
+            elif self.model=='reachable':
+                # Subset to reachable states and meaninful actions:
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
+                self.starting_states = self.landing_states
             elif self.model=='pruned':
                 # Only branch from current state:
-                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.env.state, as_objects=False, n_selected=self.n_selected)
-                self.state_space = TransitionMatrix.enumerate_states(env=self.env, state=self.env.state, as_objects=False)
-                starting_states = [self.env.state.vector]
-            # Common to both methods:
-            useful_actions = self.action_space
-            landing_states = self.state_space
+                self.action_space = TransitionMatrix.enumerate_actions(env=self.env, state=self.starting_state, as_objects=False, n_selected=self.n_selected)
+                self.landing_states = TransitionMatrix.enumerate_states(env=self.env, state=self.starting_state, as_objects=False)
+                self.starting_states = [self.starting_state.vector]
+
+            # Add null action:
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            self.action_space = [null_action] + self.action_space
 
             # Initialize transition matrix:
-            self.T = np.zeros((len(useful_actions), len(starting_states), len(landing_states)))
+            self.T = np.zeros((len(self.action_space), len(self.starting_states), len(self.landing_states)))
             
-            for i, action in enumerate(useful_actions):
-                for j, state1 in enumerate(starting_states):
-
-                    # Get state vector and influence matrix:
-                    probs = self.env.influence.matrix
-
-                    # Convert to numpy matrix (won't remain sparse during manipulation):
-                    probs = probs.toarray()
-
-                    # Multiply by state column -- uninformed agents will not influence anyone:
-                    probs = np.where(state1.reshape(-1,1), probs, 0)
-
-                    # Multiply by state row -- already informed agents will remain informed:
-                    probs = np.where(state1.reshape(1,-1), 1, probs)
-
-                    # Multiply by action row -- agents selected for intervention will be informed:
-                    probs = np.where(action.reshape(1,-1), 1, probs)
+            for i, action in enumerate(self.action_space):
+                for j, state1 in enumerate(self.starting_states):
 
                     # Calculate how likely each agent is to be informed at the end of this step:
-                    probs = 1-np.prod(1-probs,axis=0)
-                        
-                    for k, state2 in enumerate(landing_states):
+                    probs = TransitionMatrix.agent_probabilities(env=self.env, state=state1, action=action)
+                    
+                    for k, state2 in enumerate(self.landing_states):
                         
                         # Flip the probability for agents who should end up not informed and
                         # get total probability by multiplying how likely each new state is for each agent:
@@ -521,6 +587,10 @@ class TransitionMatrix:
 
         sum_check = self.T.sum(axis=-1)
         assert np.allclose( sum_check, np.ones(sum_check.shape), atol=1e-5), "Expected all rows to sum to 1."
+
+        # Create reverse lookups:
+        self.state_index_lookup = {tuple(state_vector):state_index for state_index,state_vector in enumerate(self.state_space)}
+        self.action_index_lookup = {tuple(action_vector):action_index for action_index,action_vector in enumerate(self.action_space)}
 
         return self.T
 
@@ -595,8 +665,14 @@ class Graph:
 
         # Calculate positions and build edge labels:
         self.pos = nx.spring_layout(self.G, iterations=iterations)
-        self.edge_labels = dict([((node1, node2, ), f'{np.round(connection_data["val"],2)}\n\n{np.round(self.G.edges[(node2,node1)]["val"],2)}')
-                for node1, node2, connection_data in self.G.edges(data=True) if self.pos[node1][0] > self.pos[node2][0]])
+        self.edge_labels = dict()
+        for node1, node2, connection_data in self.G.edges(data=True):
+            if self.pos[node1][0] > self.pos[node2][0]:
+                try:
+                    self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
+                except:
+                    pass
+
 
     def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
         """
@@ -647,50 +723,109 @@ class State:
     (i.e. whether or not each professional is informed).
     """
 
-    def __init__(self, env, informed=None):
+    @classmethod
+    def coerce(self, env, state):
         """
+        Coerces the input to a State object.
+
+        Accepts several input formats:
+            - a State object.
+            - a boolean vector where each value corresponds to an agent in env.agent_ids.
+            - a list of informed agent_ids.
+            - a dictionary of booleans keyed by agent_ids.
+
+        Note: If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
+        We assume that if the vector is of the same length as the numer of agents and has only boolean-like
+        values, it is a boolean state vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
+        """
+        if hasattr(state, 'vector') and hasattr(state, 'n_informed'):  # State object.
+            if env != state.env:
+                return State(env=env, vector=state.vector)
+            else:
+                return state
+        elif isinstance(state, dict):
+            return State(env=env, lookup=state)
+        else:
+            bool_values = set([True,False,0,1,0.0,1.0])
+            is_boolean = ( set(state) | bool_values ) == bool_values
+            is_full_length = (len(state)==len(env.agent_ids))
+            state = np.array(state)
+            if is_boolean and is_full_length:
+                return State(env=env, vector=state)
+            else:
+                return State(env=env, informed_ids=state)
+
+    def __init__(self, env, vector=None, informed_ids=None, lookup=None):
+        """
+        An immutable representation of the state (i.e. which agents are informed, in the same order as env.agent_ids)
         env:
             The simulation environment.
-        informed:
-            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
-            If not provided, constructed from current environment state.
-            Providing `informed` as a dict is faster but does not check key validity.
+        vector:
+            A boolean vector of informed status (one value for each agent in env.agent_id order).
+        informed_ids:
+            A list of agent_ids (or agent objects) who are informed.
+        lookup:
+            A dict of booleans (keyed by agent_id) indicating which agents are informed.
+        Exactly one of the methods (vector, ids, lookup) should be specified.
+        Providing a vector is fastest but it is not checked for validity.
         """
         self.env = env
-        self.informed = {agent_id:False for agent_id in env.agents.keys()}
-        if informed is None:
-            for agent_id, agent in env.agents.items():
-                self.informed[agent_id] = agent.informed
-        elif isinstance(informed, dict):
-            self.informed = informed  # Directly insert dict without checking it.
-        elif isinstance(informed, list):
-            for agent_id in informed:
-                self.informed[agent_id] = True
-        elif isinstance(informed, State):
-            for agent_id, val in informed.informed.items():
-                self.informed[agent_id] = val
-        else:
-            raise ValueError("informed should be list or dict.")
         self.n_agents = len(self.env.agent_ids)
+        self._vector = np.repeat(False, self.n_agents)
+        self._informed_ids = None  # Built on demand.
+        self._lookup = None  # Built on demand.
+        if vector is not None:    
+            assert len(vector)==self.n_agents
+            self._vector = np.array(vector, dtype=bool)
+        elif informed_ids is not None:
+            self._informed_ids = []
+            for agent_id in informed_ids:
+                try:
+                    agent_id = agent_id.id  # If Agent object.
+                except:
+                    pass  # If integer.
+                self._informed_ids.append(agent_id)
+                agent_index = self.env.agent_indices[agent_id]
+                self._vector[agent_index] = True
+        elif lookup is not None:
+            self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
+            for agent_id, val in lookup:
+                agent_index = self.env.agent_indices[agent_id]
+                self._lookup[agent_index] = val
+                self._vector[agent_index] = val
+            assert len(self._lookup) == self.n_agents
+        else:
+            raise ValueError("Must specify `vector`, `selected_ids`, or `lookup`.")
+        self.n_informed = sum(self.vector)
 
     @property
     def vector(self):
         """
         Return the state as a numpy boolean array in the same order as the adjacency matrix.
         """
-        informed = {agent_id for agent_id,val in self.informed.items() if val}
-        vector = np.array([(agent_id in informed) for agent_id in self.env.agent_ids])
-        return vector
+        return self._vector
 
     @property
-    def n_informed(self):
-        return sum(self.informed.values())
+    def informed_ids(self):
+        if self._informed_ids is None:
+            self._informed_ids = [agent_id for agent_id,val in zip(self.env.agent_ids,self._vector) if val]
+        return self._informed_ids
+
+    @property
+    def lookup(self):
+        if self._lookup is None:
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+        return self._lookup
 
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
+
+    def __repr__(self):
+        # Note: An exact representation would need to include the environment.
+        return "State{}".format(list(self.vector))
     
     def copy(self):
-        return State(self.env, self.informed)
+        return State(env=self.env, vector=self.vector.copy())
 
 
 class Action:
@@ -699,6 +834,38 @@ class Action:
     Static representation of an action in the environment
     (i.e. whether or not to intervene for each individual).
     """
+
+    @classmethod
+    def coerce(self, env, action):
+        """
+        Coerces the input to an Action object.
+
+        Accepts several input formats:
+            - an Action object.
+            - a boolean vector where each value corresponds to an agent in env.agent_ids.
+            - a list of selected agent_ids.
+            - a dictionary of booleans keyed by agent_ids.
+
+        Note: If a list/array is received, determine whether it is a list of agent_ids or a boolean vector. 
+        We assume that if the vector is of the same length as the numer of agents and has only boolean-like
+        values, it is a boolean action vector. This might fail un some unlikely edge cases (e.g. there are exactly two agents with IDs 0 and 1) but otherwise should be fairly robust/efficient.
+        """
+        if hasattr(action, 'vector') and hasattr(action, 'n_selected'):  # Action object.
+            if env != action.env:
+                return Action(env=env, vector=action.vector)
+            else:
+                return action
+        elif isinstance(action, dict):
+            return Action(env=env, lookup=action)
+        else:
+            bool_values = set([True,False,0,1,0.0,1.0])
+            is_boolean = ( set(action) | bool_values ) == bool_values
+            is_full_length = (len(action)==len(env.agent_ids))
+            action = np.array(action)
+            if is_boolean and is_full_length:
+                return Action(env=env, vector=action)
+            else:
+                return Action(env=env, selected_ids=action)
 
     @classmethod
     def sort_actions(cls, actions, state=None, method='random'):
@@ -724,50 +891,79 @@ class Action:
         results = sorted(results, key=lambda pair: pair[0], reverse=True)
         return results
 
-
-    def __init__(self, env, selected, value=None):
+    def __init__(self, env, vector=None, selected_ids=None, lookup=None):
         """
+        An immutable representation of the action (i.e. which agents are selected, in the same order as env.agent_ids)
         env:
             The simulation environment.
-        selected:
-            A list of agent_ids selected for intevention or a dict of booleans keyed by agent_id.
-            Providing `selected` as a dict is faster but does not check key validity.
+        vector:
+            A boolean vector of selected status (one value for each agent in env.agent_id order).
+        selected_ids:
+            A list of agent_ids (or agent objects) who are selected.
+        lookup:
+            A dict of booleans (keyed by agent_id) indicating which agents are selected.
+        Exactly one of the methods (vector, ids, lookup) should be specified.
+        Providing a vector is fastest but it is not checked for validity.
         """
         self.env = env
-        self.selected = {agent_id:False for agent_id in env.agents.keys()}
-        if isinstance(selected, dict):
-            self.selected = selected  # Directly insert dict without checking it.
-        elif isinstance(selected, list):
-            for agent_id in selected:
-                self.selected[agent_id] = True
-        else:
-            raise ValueError("selected should be list or dict.")
         self.n_agents = len(self.env.agent_ids)
-        # Optionally assign estimated value of this intervention:
-        self.value = value
+        self._vector = np.repeat(False, self.n_agents)
+        self._selected_ids = None  # Built on demand.
+        self._lookup = None  # Built on demand.
+        if vector is not None:    
+            assert len(vector)==self.n_agents
+            self._vector = np.array(vector, dtype=bool)
+        elif selected_ids is not None:
+            self._selected_ids = []
+            for agent_id in selected_ids:
+                try:
+                    agent_id = agent_id.id  # If Agent object.
+                except:
+                    pass  # If integer.
+                self._selected_ids.append(agent_id)
+                agent_index = self.env.agent_indices[agent_id]
+                self._vector[agent_index] = True
+        elif lookup is not None:
+            self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
+            for agent_id, val in lookup:
+                agent_index = self.env.agent_indices[agent_id]
+                self._lookup[agent_index] = val
+                self._vector[agent_index] = val
+            assert len(self._lookup) == self.n_agents
+        else:
+            raise ValueError("Must specify `vector`, `selected_ids`, or `lookup`.")
+        self.n_selected = sum(self.vector)
 
     @property
     def vector(self):
         """
         Return the action as a numpy boolean array in the same order as the adjacency matrix.
         """
-        selected = {agent_id for agent_id,val in self.selected.items() if val}
-        vector = np.array([(agent_id in selected) for agent_id in self.env.agent_ids])
-        return vector
+        return self._vector
 
     @property
-    def n_selected(self):
-        return sum(self.selected.values())
+    def selected_ids(self):
+        if self._selected_ids is None:
+            self._selected_ids = [agent_id for agent_id,val in zip(self.env.agent_ids,self._vector) if val]
+        return self._selected_ids
+
+    @property
+    def lookup(self):
+        if self._lookup is None:
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+        return self._lookup
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
+
+    def __repr__(self):
+        # Note: An exact representation would need to include the environment.
+        return "Action{}".format(list(self.vector))
     
     def copy(self):
-        return Action(self.env, self.selected)
+        return Action(env=self.env, vector=self.vector.copy())
 
     def get_value(self, state=None, method='random'):
-        if self.value:  # Return a manually set value if it exists.
-            return self.value
         if method=='random':  # For testing.
             value = self.env.random.uniform(10)
             value = np.round(value, 1)
@@ -775,6 +971,252 @@ class Action:
             raise NotImplementedError(f"Estimation method {method} is not defined.")
         return value
 
+
+class Policy:
+    
+    def __init__(self, env, trans=None, model=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        env:
+            The simulation environment.
+        trans:
+            (TransitionMatrix object)
+            If not specified, uses the environment's transition matrix.
+        method:
+            Method for determining best policy.
+        gamma:
+            Discount factor.
+        epsilon:
+            Convergence tolerance.
+        max_steps:
+            Max updates for value iteration.
+        progress:
+            How often to print progress (or None).
+        """
+        self.env = env
+        self.trans = self.env.trans if trans is None else trans
+        # Make sure transition matrix has been udpates:
+        if self.trans is None:
+            raise RuntimeError("env.update_transition_matrix was never called.")
+        # Get method:
+        valid_models = {'policy_iteration'}
+        self.model = 'policy_iteration' if model is None else model
+        assert self.model in valid_models, f"{self.model} is not a valid model."
+
+        self.updated = False
+
+        # Model-specific initialization:
+        if (self.model=='policy_iteration'):
+
+            if len(self.starting_states) != len(self.landing_states):
+                print(self.starting_states)
+                print(self.landing_states)
+                raise ValueError("Policy iteration requires same number of starting and landing states.")
+
+            # Solver properties:
+            self.gamma = 0.85 if gamma is None else gamma
+            self.epsilon = 0.01 if epsilon is None else epsilon
+            self.max_steps = float("+Inf") if max_steps is None else max_steps
+            self.progress = 20 if progress is None else progress
+            
+            # Solver variables:
+            self.values = self.initialize_values()
+            self.rewards = self.initialize_rewards()
+            self.policy = self.initialize_policy()
+
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+
+        # Initialize:
+        self.update()
+
+    @property
+    def starting_states(self):
+        return self.trans.starting_states
+
+    @property
+    def landing_states(self):
+        return self.trans.landing_states
+
+    @property
+    def state_space(self):
+        return self.trans.state_space
+
+    @property
+    def action_space(self):
+        return self.trans.action_space
+
+    @property
+    def T(self):
+        return self.trans.T
+
+    def encode_state(self, state_vector):
+        return self.trans.encode_state(state_vector)
+
+    def decode_state(self, state_index):
+        return self.trans.decode_state(state_index)
+
+    def encode_action(self, action_vector):
+        return self.trans.encode_action(action_vector)
+
+    def decode_action(self, action_index):
+        return self.trans.decode_action(action_index)
+
+    def initialize_values(self):
+        """
+        Value array for states (1D)
+        """
+        return np.zeros(len(self.state_space))
+
+    def initialize_rewards(self):
+        """
+        Create a R(s,'s) matrix (reward can be thought of as independent of action)
+        The reward is equal to the increase in the number of agents influenced
+        """
+        R = np.zeros((len(self.starting_states), len(self.landing_states)))
+        for i, state1 in enumerate(self.starting_states):
+            for j, state2 in enumerate(self.landing_states):
+                reward = np.max((0, (np.sum(state2) - np.sum(state1))))
+                R[i,j] = reward
+        return R
+
+    def initialize_policy(self):
+        """
+        Value array for states (1D)
+        """
+        return np.zeros(len(self.starting_states)).astype(int)
+
+    def calculate_policy_value(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        Perform policy estimation.
+        """
+
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        epsilon = self.epsilon if epsilon is None else epsilon
+        max_steps = self.max_steps if max_steps is None else max_steps
+        progress = self.progress if progress is None else progress
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+
+        # Evaluate:
+        new_values = values.copy()
+        counter = 0
+        while counter < max_steps:
+
+            deltas = []
+            for state_index, state in enumerate(self.state_space):
+                
+                # Extract the values relevant to the current state
+                cur_value = new_values[state_index]
+                cur_action_index = policy[state_index]
+                
+                transition_matrix = self.T[cur_action_index,state_index,:]
+                reward_matrix = rewards[state_index,:].reshape(-1,)
+
+                # Calculate the next value using Bellman update
+                next_value = np.matmul(transition_matrix, (reward_matrix + gamma * new_values))
+                
+                # Update the value matrix 
+                new_values[state_index] = next_value
+                deltas.append(abs(next_value - cur_value))
+
+            counter += 1
+            if isinstance(progress, int) and (progress>0) and (counter % progress == 0):
+                print(f"{counter} iterations run - max delta = {np.max(deltas)}")
+            if np.max(deltas) < epsilon:
+                break
+
+        return new_values
+
+    def calculate_policy_improvement(self, policy, values=None, rewards=None, gamma=None):
+        """
+        Perform policy improvement.
+        """
+
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+    
+        # Evaluate:
+        stable_policy = True
+        new_policy = policy.copy()
+        for state_index, state in enumerate(self.state_space):
+
+            old_policy = policy.copy()
+
+            # Calculate the value of taking a specific action followed by the
+            # original policy
+            action_values = []
+            for action_index, action in enumerate(self.action_space):
+                action_value = np.matmul(self.T[action_index, state_index, :], 
+                                        (rewards[state_index,:] + gamma * values))
+                action_values.append(action_value)
+            
+            best_action = np.argmax(action_values)
+
+            # Update the policy
+            new_policy[state_index] = best_action
+
+            if new_policy[state_index] != old_policy[state_index]:
+                stable_policy = False
+
+        return new_policy, stable_policy
+
+    def policy_iteration(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+        """
+        Perform policy iteration.
+        """
+        # Get default values:
+        gamma = self.gamma if gamma is None else gamma
+        epsilon = self.epsilon if epsilon is None else epsilon
+        max_steps = self.max_steps if max_steps is None else max_steps
+        progress = self.progress if progress is None else progress
+        policy = self.policy if policy is None else policy
+        values = self.values if values is None else values
+        rewards = self.rewards if rewards is None else rewards
+
+        # Evaluate:
+        stable = False
+        new_policy = policy.copy()
+        new_values = values.copy()
+        while stable == False:
+            new_values = self.calculate_policy_value(
+                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
+                epsilon=epsilon, max_steps=max_steps, progress=progress
+            )
+            new_policy, stable = self.calculate_policy_improvement(
+                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
+            )
+
+        return new_policy     
+
+    def update(self):
+        """
+        Recalculate policy.
+        """
+        if (self.model=='policy_iteration'):
+            self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        # Set flag:
+        self.updated = True
+
+    def get_action(self, state):
+        """
+        Recomend action based on policy.
+        """
+        # Check flag:
+        if not self.updated:
+            raise RuntimeError("Policy has not been updated.")
+        if (self.model=='policy_iteration'):
+            state_index = self.encode_state(state_vector=state)
+            action_index = self.policy[state_index]
+            return self.action_space[action_index]
+        else:
+            raise NotImplementedError(f"Policy model {self.model} not implemented.")
 
 class Environment:
 
@@ -784,19 +1226,57 @@ class Environment:
     The actions are defined by which combination of professionals is **selected** for intervention.
     """
 
-    def __init__(self, agents, agent_ids=None, seed=None):
+    def __init__(
+        self, agents, agent_ids=None, seed=None,
+        base_receptivity = 0.5,
+        base_persuasiveness = 0.5,
+        intervention_size = 100,
+        influence_model = None,
+        transition_model = None,
+        policy_model = None,
+    ):
         """
         agents:
             A list or dict (keyed by agent_id) of Agent objects.
         agent_ids:
             (Optional) List of agent_ids in the order they should be stored in the matrix.
             If not provided, defaults to sorted order of agent_ids.
+        seed:
+            (Optional) An integer seed for numpy random state.
+        
+        HYPERPARAMETERS:
+
+        base_receptivity:
+            (float between 0.0 and 1.0)
+            How receptive agents are when receiving information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        base_persuasiveness:
+            (float between 0.0 and 1.0)
+            How presuasive agents are when transimitting information for neighbors.
+            This value is only used as the default for agents that were initialized without a value.
+        intervention_size:
+            (int)
+            The default number of agents to select for intervention at each step.
+            (Under some transition models, actions may include fewer interventions if
+            the intervention_size is larger than the number of uninformed agents.)
+        influence_model:
+            (string: 'default')
+            [Defaults are handled in the InfluenceMatrix class.]
+        transition_model:
+            (string: 'exhaustive', 'exhaustive_fast', 'reachable', 'pruned')
+            [Defaults are handled in the TransitionMatrix class.]
+        policy_model:
+            (string: 'policy_evaluation')
+            [Defaults are handled in the Policy class.]
         """
 
         # Hyperparameters:
-        self.base_receptivity = 0.5
-        self.base_persuasiveness = 0.5
-        self.intervention_size = 100  # How many interventions at each step?
+        self.base_receptivity = base_receptivity
+        self.base_persuasiveness = base_persuasiveness
+        self.intervention_size = intervention_size
+        self.influence_model = influence_model
+        self.transition_model = transition_model
+        self.policy_model = policy_model
 
         # Random state:
         self.seed = seed
@@ -809,17 +1289,27 @@ class Environment:
         
         # Maintain a list of agent_ids in the order the appear in the matrix:
         self.agent_ids = agent_ids if agent_ids else list(sorted(self.agents.keys()))
+        self.agent_indices = {agent_id:agent_index for agent_index,agent_id in enumerate(self.agent_ids)}
 
         # Network state (set by update function):
         self.state = None  # Boolean indicators of which agents are informed.
         self.inner = None  # AdjacnecyMatrix for inner circle networks.
         self.outer = None  # AdjacnecyMatrix for outer circle networks.
+        self.influence = None  # InfluenceMatrix.
 
         # Networks Graph
         self.graph = None
 
         # Transition Matrix
         self.trans = None
+
+        # Policy
+        self.policy = None
+
+        # Simulation state (updated at the beginning of each simulation step):
+        self.step_count = None
+        self.state_history = None
+        self.action_history = None
 
         # Initialize:
         self.update()
@@ -836,6 +1326,8 @@ class Environment:
         self.update_state()
         #self.update_network_graph()
         #self.update_transition_matrix()
+        #self.update_policy()
+        self.reset_simulation()
 
     def update_agents(self):
         """
@@ -852,6 +1344,24 @@ class Environment:
                 agent.receptivity = self.base_receptivity
             if agent.persuasiveness is None:
                 agent.persuasiveness = self.base_persuasiveness
+            # Make sure inner circle is a list of agent_ids not objects:
+            inner_circle = []
+            for other_agent_id in agent.inner_circle:
+                try:
+                    other_agent_id = other_agent_id.id
+                except:
+                    pass
+                inner_circle.append(other_agent_id)
+            agent.inner_circle = sorted(set(inner_circle))
+            # Make sure inner circle is a list of agent_ids not objects:
+            outer_circle = []
+            for other_agent_id in agent.outer_circle:
+                try:
+                    other_agent_id = other_agent_id.id
+                except:
+                    pass
+                outer_circle.append(other_agent_id)
+            agent.outer_circle = sorted(set(outer_circle))
 
     def update_workplaces(self):
         """
@@ -880,42 +1390,58 @@ class Environment:
         self.inner = AdjacencyMatrix(self, scope='inner', agent_ids=self.agent_ids)
         self.outer = AdjacencyMatrix(self, scope='outer', agent_ids=self.agent_ids)
 
-    def update_influence(self):
+    def update_influence(self, model=None):
         """
         Rebuild agent adjacency matrix.
         """
-        self.influence = InfluenceMatrix(self, model='default', agent_ids=self.agent_ids)
+        model = model if model is not None else self.influence_model
+        self.influence = InfluenceMatrix(self, model=model, agent_ids=self.agent_ids)
 
-    def update_state(self, informed=None):
+    def update_state(self, new_state=None):
         """
         Build state object to reflect current agent states.
-        informed:
-            A list of agent_ids who are informed or a dict of booleans keyed by agent_id.
+        new_state:
+            A new state to update the agent states to.
             (Optional -- if not provided, agent states are left unchanged.)
         """
 
         # Apply specified state, if provided (otherwise keep current state):
-        if informed:
-            # Build a state object (which accepts `informed` in various formats):
-            new_state = State(self, informed)
+        if new_state is not None:
+            # Coerce to state object:
+            new_state = State.coerce(env=self, state=new_state)
             # Update agents in the environment to reflect requested state:
-            for agent_id, val in zip(self.agents, new_state.vector):
+            for agent_id, val in zip(self.agent_ids, new_state.vector):
                 self.agents[agent_id].informed = val
+        else:
+            new_state = [self.agents[agent_id].informed for agent_id in self.agent_ids]
+            new_state = State(env=self, vector=new_state)
 
         # Update state (i.e. which agents are informed):
-        self.state = State(self)
+        self.state = new_state
 
-    def update_transition_matrix(self, n_selected=None, model=None):
+    def update_transition_matrix(self, starting_state=None, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
+        starting_state:
+            The state from which to branch (not applicable for exhaustive models).
+        
         n_selected:
             Number of agents being selected for intervention at each timestep.
             If None, defaults to self.intervention_size.
         model:
             The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
-        self.trans = TransitionMatrix(env=self, model=model, n_selected=n_selected)
+        model = model if model is not None else self.transition_model
+        self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
+
+    def update_policy(self, model=None, *policy_args, **policy_kwargs):
+        """
+        model:
+            The model used to evaluate the policy.
+        """
+        model = model if model is not None else self.policy_model
+        self.policy = Policy(env=self, model=model, *policy_args, **policy_kwargs)
 
     def update_network_graph(self):
         """
@@ -936,6 +1462,60 @@ class Environment:
         # Pass parameters through to Graph.plot_network_graph, which updates as needed:
         return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
 
+    def reset_simulation(self):
+        """
+        Clear state and action histories.
+        """
+        self.step_count = 0
+        self.state_history = []
+        self.action_history = []
+
+    def simulate_steps(self, n_steps=1, dry_run=False):
+        """
+        Simulate one step of information propagation.
+        apply:
+            Whether or not to apply the new state.
+            Applies the new states and updates histories (and returns them).
+            Returns a state_history, action_history, landing_state tuple.
+            Also applies them to the environment, unless dry_run=True.
+        """
+        
+        step_count = 0
+        state_history = []
+        action_history = []
+        current_state = self.state.copy()
+        for _ in range(n_steps):
+            
+            # Get action from policy:
+            if self.policy:
+                action = self.policy.get_action(current_state)
+            else:
+                action = Action(env=self, selected_ids=[])  # Placeholder action.
+            
+            # Simulate organic transmission and apply intervention:
+            probs = TransitionMatrix.agent_probabilities(env=self, state=current_state, action=action)
+
+            # Simulate an outcome for each agent:
+            landing_state = self.random.binomial(n=1, p=probs).astype(bool)
+            landing_state = State(env=self, vector=landing_state)
+            
+            # Store results:
+            step_count += 1
+            state_history.append(current_state)
+            action_history.append(action)
+            current_state = landing_state
+
+        # Update history and apply new state:
+        if not dry_run:
+            self.step_count += step_count
+            self.state_history.extend(state_history)
+            self.action_history.extend(action_history)
+            self.update_state(new_state=landing_state)
+
+        return state_history, action_history, landing_state
+
+
+
     @property
     def G(self):
         """
@@ -954,6 +1534,20 @@ class Environment:
             return None
             #raise RuntimeError("self.update_transition_matrix has not been called.")
         return self.trans.T
+
+    @property
+    def landing_states(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.landing_states
+
+    @property
+    def starting_states(self):
+        if self.trans is None:
+            return None
+            #raise RuntimeError("self.update_transition_matrix has not been called.")
+        return self.trans.starting_states
 
     @property
     def state_space(self):
