@@ -9,7 +9,7 @@ class Dataset:
 
     def __init__(self, seed=182):
 
-        assert len(Agent.all_agents)==0, "Please call Agent.reset() to resetart agent_ids at zero before building a dataset."
+        assert len(Agent.all_agents)==0, "Please call Agent.reset() to restart agent_ids at zero before building a dataset."
 
         self.random = np.random.RandomState(seed)
 
@@ -90,14 +90,19 @@ class Dataset:
             for agent2 in agents_2:
                 if n_connections >= max_connections:
                     break
+                if agent2.id == agent1.id:
+                    continue
+                if agent2.id in agent1.inner_circle:
+                    continue
+                if agent2.id in agent1.outer_circle:
+                    continue
                 if agent1.specialty_ids[0]==agent2.specialty_ids[0]:
                     connect = self.random.uniform()<p_speciality
                 else:
                     connect = self.random.uniform()<p_other
                 if connect:
                     n_connections += 1
-                    if agent2.id not in agent1.outer_circle:
-                        agent1.outer_circle.append(agent2.id)
+                    agent1.outer_circle.append(agent2.id)
 
     def build_agent_table(self):
 

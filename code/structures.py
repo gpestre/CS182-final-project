@@ -16,7 +16,7 @@ class Agent:
     
     @classmethod
     def reset(cls):
-        print("WARNING: Agent class was reset, which may cause conflicting agent_ids.")
+        print("WARNING: Agent class was reset, which may cause agent_id conflicts with other simulations.")
         cls.all_agents = list()
 
     @classmethod
