@@ -145,7 +145,7 @@ class Dataset:
         # Build connections between workplaces:
         for _ in range(3):
             assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
-            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2, replace=False)
             self.connect_workplaces(
                 workplace_id_1 = workplace_id_1,
                 workplace_id_2 = workplace_id_2,
@@ -161,7 +161,7 @@ class Dataset:
                 def func(vals):
                     n_choices = self.random.randint(n_min, n_max)
                     n_choices = min(n_choices, len(vals))
-                    return list(np.random.choice(vals, size=n_choices, replace=False))
+                    return list(self.random.choice(vals, size=n_choices, replace=False))
                 return func
             else:
                 raise NotImplementedError
