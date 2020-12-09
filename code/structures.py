@@ -1049,56 +1049,86 @@ class Policy:
 
 class RandomPolicy(Policy):
     """
-    Randomly selects agents to inform.
+    Randomly selects agents to inform (even if they are already informed).
     """
     
-    def __init__(self, env, n_selected=None, useful_only=False):
+    def __init__(self, env, n_selected=None):
         """
         Build a policy that randomly selects agents to inform.
         env:
             The simulation environment.
         n_selected:
             The number of agents to select in each action (defaults to env.intervention_size).
-        useful_only:
-            If True, only select agents who are not currently informed.
         """
         self.env = env
         self.n_selected = n_selected
-        self.useful_only = useful_only
-        self._action_space = None  # Cache (only used when useful_only=False)
 
-    def get_action_space(self, state=None):
+        # Placeholder for policy properties (initalized below):
+        self._action_space = None
+        self.n_actions = None
+        
+        # Initialize:
+        self.update()
+
+    def update(self):
+        action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=None, as_objects=False)
+        if len(action_space)==0:
+            action_space = Action(env=self.env, selected_ids=[]).vector
+        self._action_space = action_space
+        self.n_actions = len(action_space)
+
+    @property
+    def action_space(self):
+        return self._action_space
+    
+    def get_action(self):
         """
-        Get action state.
+        Provde a random action:
         """
-        if self.useful_only:
-            # Build useful actions:
-            state = self.env.state if state is None else state
-            if state is None:
-                raise ValueError("RandomPolicy cannot be run without a state.")
-            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
-            if len(action_space)>0:
-                return action_space
-            else:
-                return Action(env=self.env, selected_ids=[]).vector  # Null action.
-        else:
-            # Build and cache all possible actions:
-            if self._action_space is not None:
-                return self._action_space
-            null_action = Action(env=self.env, selected_ids=[]).vector
-            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=None, as_objects=False)
-            action_space = [null_action] + action_space
-            self._action_space = action_space  # Cache.
-            return action_space
+        index = self.env.random.randint( self.n_actions )
+        return self.action_space[index]
+
+class RandomUsefulPolicy(Policy):
+    """
+    Randomly selects agents to inform (among those who are not informed already).
+    """
+    
+    def __init__(self, env, n_selected=None):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.intervention_size).
+        """
+        self.env = env
+        self.n_selected = n_selected
+
+    @property
+    def action_space(self):
+        raise ValueError("RandomUsefulPolicy does not have a fixed action space -- depends on current state.")
+
+    def get_action_space(self, state):
+        """
+        Get action space for specified state.
+        """
+        action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
+        if len(action_space)==0:
+            action_space = Action(env=self.env, selected_ids=[]).vector  # Null action.
+        return action_space
     
     def get_action(self, state=None):
         """
-        Recomend action based on policy.
+        Recomend action based on policy, for given state.
+        If no state is specified, uses current environment state.
         """
-        if self.useful_only:
-            action_space = self.get_action_space(state=state)
-        else:
-            action_space = self.get_action_space()
+        # Check input:
+        state = self.env.state if state is None else state
+        if state is None:
+            raise ValueError("RandomUsefulPolicy cannot be run without a state.")
+        # Get current action space:
+        action_space = self.get_action_space(state=state)
+        # Choose random action:
         index = self.env.random.randint( len(action_space) )
         return action_space[index]
         
@@ -1559,9 +1589,9 @@ class Environment:
         if model=='policy_iteration':
             self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
         elif model=='random_useful_policy':
-            self.policy = RandomPolicy(env=self, useful_only=True, *policy_args, **policy_kwargs)
+            self.policy = RandomUsefulPolicy(env=self, *policy_args, **policy_kwargs)
         elif model=='random_policy':
-            self.policy = RandomPolicy(env=self, useful_only=False, *policy_args, **policy_kwargs)
+            self.policy = RandomPolicy(env=self, *policy_args, **policy_kwargs)
         else:
             raise NotImplementedError("Policy model {model} is not yet implemented.")
 
