@@ -9,7 +9,7 @@ class Dataset:
 
     def __init__(self, seed=182):
 
-        assert len(Agent.all_agents)==0, "Please call Agent.reset() to resetart agent_ids at zero before building a dataset."
+        assert len(Agent.all_agents)==0, "Please call Agent.reset() to restart agent_ids at zero before building a dataset."
 
         self.random = np.random.RandomState(seed)
 
@@ -58,7 +58,7 @@ class Dataset:
                 receptivity = np.round(receptivity_func(),2),
                 persuasiveness = np.round(persuasiveness_func(),2),
             )
-            assert agent.id == agent_id, "Something has gone wrong 😱"
+            assert agent.id == agent_id, f"Something has gone wrong 😱 (sometimes happens when using autoreload in a Jupyter notebook)."
             new_agents.append(agent)
 
         # Update global lists:
@@ -90,14 +90,19 @@ class Dataset:
             for agent2 in agents_2:
                 if n_connections >= max_connections:
                     break
+                if agent2.id == agent1.id:
+                    continue
+                if agent2.id in agent1.inner_circle:
+                    continue
+                if agent2.id in agent1.outer_circle:
+                    continue
                 if agent1.specialty_ids[0]==agent2.specialty_ids[0]:
                     connect = self.random.uniform()<p_speciality
                 else:
                     connect = self.random.uniform()<p_other
                 if connect:
                     n_connections += 1
-                    if agent2.id not in agent1.outer_circle:
-                        agent1.outer_circle.append(agent2.id)
+                    agent1.outer_circle.append(agent2.id)
 
     def build_agent_table(self):
 
@@ -123,7 +128,7 @@ class Dataset:
         
         workplace_sizes = [10,20,5,4,4]
         specialty_proportions = [10,3,4,2]
-        
+
         # Build workplaces"
         for w,n_agents in enumerate(workplace_sizes):
             self.build_workplace(
@@ -140,13 +145,45 @@ class Dataset:
         # Build connections between workplaces:
         for _ in range(3):
             assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
-            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2, replace=False)
             self.connect_workplaces(
                 workplace_id_1 = workplace_id_1,
                 workplace_id_2 = workplace_id_2,
                 p_speciality = 0.10,
                 p_other = 0.05,
                 max_connections = 5,
+            )
+        
+        self.build_environment()
+
+    def recipe2(self):
+        
+        workplace_sizes = [4,5]
+        specialty_proportions = [2,1]
+        
+        # Build workplaces"
+        for w,n_agents in enumerate(workplace_sizes):
+            self.build_workplace(
+                workplace_id=w+1,
+                n_agents=n_agents,
+                inner_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=2, method='uniform')(agent_ids),
+                outer_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=4, method='uniform')(agent_ids),
+                specialty_proportions=specialty_proportions,
+                informed_func = lambda: self.random.binomial(n=1, p=0.0),
+                receptivity_func = lambda: self.random.uniform(0.0, 0.5),
+                persuasiveness_func = lambda: self.random.uniform(0.0, 0.5),
+            )
+        
+        # Build connections between workplaces:
+        for _ in range(3):
+            assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
+            self.connect_workplaces(
+                workplace_id_1 = workplace_id_1,
+                workplace_id_2 = workplace_id_2,
+                p_speciality = 0.20,
+                p_other = 0.1,
+                max_connections = 2,
             )
 
         self.build_environment()
@@ -156,7 +193,7 @@ class Dataset:
                 def func(vals):
                     n_choices = self.random.randint(n_min, n_max)
                     n_choices = min(n_choices, len(vals))
-                    return list(np.random.choice(vals, size=n_choices, replace=False))
+                    return list(self.random.choice(vals, size=n_choices, replace=False))
                 return func
             else:
                 raise NotImplementedError

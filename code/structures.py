@@ -7,7 +7,11 @@ import numpy as np
 import scipy.sparse
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import itertools
+
+from matplotlib.colors import Normalize as colorNormalize
+from matplotlib.lines import Line2D
 
 
 class Agent:
@@ -16,7 +20,7 @@ class Agent:
     
     @classmethod
     def reset(cls):
-        print("WARNING: Agent class was reset, which may cause conflicting agent_ids.")
+        print("WARNING: Agent class was reset, which may cause agent_id conflicts with other simulations.")
         cls.all_agents = list()
 
     @classmethod
@@ -93,8 +97,9 @@ class Agent:
         """
 
         # Generate unique ID and add to list:
-        self.id = len(Agent.all_agents)
+        self._id = len(Agent.all_agents)
         Agent.all_agents.append(self)
+        self.id = self._id
 
         # Define properties:
         self.env = env
@@ -109,6 +114,22 @@ class Agent:
         # Define state variables:
         self.informed = self.informed_init  # Is this professional currently up to date?
         self.intervention = False  # Has this profession received a direct intervention?
+
+    def copy(self):
+        agent = Agent(
+            env = self.env,
+            workplace_ids = None if self.workplace_ids is None else self.workplace_ids.copy(),
+            specialty_ids = None if self.specialty_ids is None else self.specialty_ids.copy(),
+            inner_circle = None if self.inner_circle is None else self.inner_circle.copy(),
+            outer_circle = None if self.outer_circle is None else self.outer_circle.copy(),
+            informed_init = self.informed_init,
+            receptivity = self.receptivity,
+            persuasiveness = self.persuasiveness,
+        )
+        agent.id = self.id
+        agent.informed = self.informed
+        agent.intervention = self.intervention
+        return agent
 
 
 class AdjacencyMatrix:
@@ -351,16 +372,10 @@ class TransitionMatrix:
             # Pruned case:
             # Convert to State object (accepts various input formats):
             current_state = State.coerce(env=env, state=state)
-            # Enumerate states (as list of tuples) and convert to arrays:
-            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
-            states = [np.array(state) for state in states]
-            # Remove unreachable states:
-            # A state is unreachable there is any agent who is informed in the current state
-            # would become uninformed in the candidate state.
-            states = [
-                candidate_state for candidate_state in states
-                if not np.any( (current_state==True)&(candidate_state==False) )
-            ]
+            # Get list of reachable states for each agent:
+            agent_states = [[True] if s else [False,True] for s in current_state.vector]
+            # Build list of reachable states (all possible combinations of agent-states):
+            states = [np.array(state) for state in itertools.product(*agent_states)]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
@@ -655,7 +670,7 @@ class Graph:
                 self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
                 self._edge_colors.append('#a5a6a9')
 
-    def update_layout(self, iterations=None):
+    def update_layout(self, labels, iterations=None, seed=182):
         """
         Calculate node positions (with specified number of iterations)
         """
@@ -669,17 +684,19 @@ class Graph:
             iterations = 20
 
         # Calculate positions and build edge labels:
-        self.pos = nx.spring_layout(self.G, iterations=iterations)
+        self.pos = nx.spring_layout(self.G, iterations=iterations, seed=seed)
         self.edge_labels = dict()
-        for node1, node2, connection_data in self.G.edges(data=True):
-            if self.pos[node1][0] > self.pos[node2][0]:
-                try:
-                    self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
-                except:
-                    pass
+        if labels == True:
+            for node1, node2, connection_data in self.G.edges(data=True):
+                if self.pos[node1][0] > self.pos[node2][0]:
+                    try:
+                        self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
+                    except:
+                        pass
 
 
-    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, labels=True, legend=False, 
+                           colors="influence", seed=182, figsize=None, rebuild=False, ax=None):
         """
         Plot the network graph in the specified axes (or not axes of not specified).
         (The `iterations` parameter is passed to the layout update function, only if needed.)
@@ -687,8 +704,8 @@ class Graph:
         """
 
         # Update layout (and build graph) if needed:
-        if (self.pos is None) or (self.edge_labels is None) or (self._edge_colors is None):
-            self.update_layout(iterations=iterations)
+        if (self.pos is None) or (self.edge_labels is None) or (self._edge_colors is None) or (rebuild==True):
+            self.update_layout(iterations=iterations, labels=labels, seed=seed)
 
         if influenced is None:
             influenced = self.env.state.vector  # Boolean vector.
@@ -698,26 +715,58 @@ class Graph:
 
         # Set up color map
         color_map = []
-        for node in self.node_labels:
-            state_index = self.state_index_lookup[node]
-            if influenced[state_index] and action_nodes[state_index]:
-                color_map.append('#dbb700')
-            elif influenced[state_index]:
-                color_map.append('#f45844')
-            elif action_nodes[state_index]:
-                color_map.append('#3dbd5d')
-            else:
-                color_map.append('#0098d8')
+        if colors == "influence":
+            for node in self.node_labels:
+                state_index = self.state_index_lookup[node]
+                if influenced[state_index] and action_nodes[state_index]:
+                    color_map.append('#dbb700')
+                elif influenced[state_index]:
+                    color_map.append('#f45844')
+                elif action_nodes[state_index]:
+                    color_map.append('#3dbd5d')
+                else:
+                    color_map.append('#0098d8')
+        elif colors == "workplace":
+            all_workplaces = list(self.env.workplaces.keys())
+            norm = colorNormalize(vmin=min(all_workplaces), vmax=max(all_workplaces)+1, clip=True)
+            mapper = cm.ScalarMappable(norm=norm, cmap=cm.hsv)
+            for node in self.node_labels:
+                state_index = self.state_index_lookup[node]
+                workplace = self.env.agents[state_index].workplace_ids[0]
+                color_map.append(mapper.to_rgba(workplace))
+        else:
+            raise ValueError("Colors must be one of ['influence', 'workplace']")
+
+
 
         if ax is None:
             if figsize is None:
                 figsize = (10,7)
             _, ax = plt.subplots(figsize=figsize)
         
-        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
+        if labels == True:
+            nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
         nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, 
                          edge_color=self._edge_colors, ax=ax, connectionstyle='arc3, rad = 0.1')
 
+        if legend == True:
+            if colors == "influence":
+                legend = [Line2D([0], [0], color="#0f0a01", lw=2, label="Inner Connection"),
+                Line2D([0], [0], color="#a5a6a9", lw=2, label="Outer Connection"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#f45844", 
+                        markersize=15, label="Influenced"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#3dbd5d", 
+                        markersize=15, label="Chosen Action"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#0098d8", 
+                        markersize=15, label="Uninfluenced Agent")]
+            elif colors == "workplace":
+                legend = []
+                for workplace_id, color in zip(all_workplaces, set(color_map)):
+                    legend.append(Line2D([0], [0], marker='o', color='w', markerfacecolor=color, 
+                        markersize=15, label=f"Workplace: {workplace_id}"))
+            else:
+                raise ValueError("Colors must be one of ['influence', 'workplace']")
+            ax.legend(handles=legend)
         return ax
 
 
@@ -780,7 +829,7 @@ class State:
         self._informed_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
         if vector is not None:    
-            assert len(vector)==self.n_agents
+            assert len(vector)==self.n_agents, f"State constructor got {len(vector)} values, expected {self.n_agents}"
             self._vector = np.array(vector, dtype=bool)
         elif informed_ids is not None:
             self._informed_ids = []
@@ -916,7 +965,7 @@ class Action:
         self._selected_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
         if vector is not None:    
-            assert len(vector)==self.n_agents
+            assert len(vector)==self.n_agents, f"Action constructor got {len(vector)} values, expected {self.n_agents}"
             self._vector = np.array(vector, dtype=bool)
         elif selected_ids is not None:
             self._selected_ids = []
@@ -978,16 +1027,90 @@ class Action:
 
 
 class Policy:
+    """
+    Superclass for various kinds of policies.
+    """
     
-    def __init__(self, env, trans=None, model=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+    def __init__(self, env):
+        self.env = env
+
+    @property
+    def action_space(self):
+        """
+        Return a list of available actions.
+        """
+        raise NotImplementedError  # Policy superclass.
+
+    def get_action(self, state):
+        """
+        Recomend action based on policy.
+        """
+        raise NotImplementedError  # Policy superclass.
+
+class RandomPolicy(Policy):
+    """
+    Randomly selects agents to inform.
+    """
+    
+    def __init__(self, env, n_selected=None, useful_only=False):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.intervention_size).
+        useful_only:
+            If True, only select agents who are not currently informed.
+        """
+        self.env = env
+        self.n_selected = n_selected
+        self.useful_only = useful_only
+        self._action_space = None  # Cache (only used when useful_only=False)
+
+    def get_action_space(self, state=None):
+        """
+        Get action state.
+        """
+        if self.useful_only:
+            # Build useful actions:
+            state = self.env.state if state is None else state
+            if state is None:
+                raise ValueError("RandomPolicy cannot be run without a state.")
+            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
+            if len(action_space)>0:
+                return action_space
+            else:
+                return Action(env=self.env, selected_ids=[]).vector  # Null action.
+        else:
+            # Build and cache all possible actions:
+            if self._action_space is not None:
+                return self._action_space
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=None, as_objects=False)
+            action_space = [null_action] + action_space
+            self._action_space = action_space  # Cache.
+            return action_space
+    
+    def get_action(self, state=None):
+        """
+        Recomend action based on policy.
+        """
+        if self.useful_only:
+            action_space = self.get_action_space(state=state)
+        else:
+            action_space = self.get_action_space()
+        index = self.env.random.randint( len(action_space) )
+        return action_space[index]
+        
+class PolicyIteration(Policy):
+    
+    def __init__(self, env, trans=None, gamma=None, epsilon=None, max_steps=None, progress=None):
         """
         env:
             The simulation environment.
         trans:
             (TransitionMatrix object)
             If not specified, uses the environment's transition matrix.
-        method:
-            Method for determining best policy.
         gamma:
             Discount factor.
         epsilon:
@@ -1001,35 +1124,26 @@ class Policy:
         self.trans = self.env.trans if trans is None else trans
         # Make sure transition matrix has been udpates:
         if self.trans is None:
-            raise RuntimeError("env.update_transition_matrix was never called.")
-        # Get method:
-        valid_models = {'policy_iteration'}
-        self.model = 'policy_iteration' if model is None else model
-        assert self.model in valid_models, f"{self.model} is not a valid model."
+            raise RuntimeError("env.build_transition_matrix was never called.")
 
         self.updated = False
 
-        # Model-specific initialization:
-        if (self.model=='policy_iteration'):
+        # Check starting and landing states:
+        if len(self.starting_states) != len(self.landing_states):
+            print(self.starting_states)
+            print(self.landing_states)
+            raise ValueError("Policy iteration requires same number of starting and landing states.")
 
-            if len(self.starting_states) != len(self.landing_states):
-                print(self.starting_states)
-                print(self.landing_states)
-                raise ValueError("Policy iteration requires same number of starting and landing states.")
-
-            # Solver properties:
-            self.gamma = 0.85 if gamma is None else gamma
-            self.epsilon = 0.01 if epsilon is None else epsilon
-            self.max_steps = float("+Inf") if max_steps is None else max_steps
-            self.progress = 20 if progress is None else progress
-            
-            # Solver variables:
-            self.values = self.initialize_values()
-            self.rewards = self.initialize_rewards()
-            self.policy = self.initialize_policy()
-
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        # Solver properties:
+        self.gamma = 0.85 if gamma is None else gamma
+        self.epsilon = 0.01 if epsilon is None else epsilon
+        self.max_steps = float("+Inf") if max_steps is None else max_steps
+        self.progress = 20 if progress is None else progress
+        
+        # Solver variables:
+        self.values = self.initialize_values()
+        self.rewards = self.initialize_rewards()
+        self.policy = self.initialize_policy()
 
         # Initialize:
         self.update()
@@ -1202,10 +1316,7 @@ class Policy:
         """
         Recalculate policy.
         """
-        if (self.model=='policy_iteration'):
-            self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
         # Set flag:
         self.updated = True
 
@@ -1216,12 +1327,9 @@ class Policy:
         # Check flag:
         if not self.updated:
             raise RuntimeError("Policy has not been updated.")
-        if (self.model=='policy_iteration'):
-            state_index = self.encode_state(state_vector=state)
-            action_index = self.policy[state_index]
-            return self.action_space[action_index]
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        state_index = self.encode_state(state_vector=state)
+        action_index = self.policy[state_index]
+        return self.action_space[action_index]
 
 class Environment:
 
@@ -1271,7 +1379,7 @@ class Environment:
             (string: 'exhaustive', 'exhaustive_fast', 'reachable', 'pruned')
             [Defaults are handled in the TransitionMatrix class.]
         policy_model:
-            (string: 'policy_evaluation')
+            (string: 'policy_evaluation', 'random_useful_policy', 'random_policy')
             [Defaults are handled in the Policy class.]
         """
 
@@ -1329,9 +1437,9 @@ class Environment:
         self.update_adjacency()
         self.update_influence()
         self.update_state()
-        #self.update_network_graph()
-        #self.update_transition_matrix()
-        #self.update_policy()
+        #self.build_network_graph()
+        #self.build_transition_matrix()
+        #self.build_policy()
         self.reset_simulation()
 
     def update_agents(self):
@@ -1424,7 +1532,7 @@ class Environment:
         # Update state (i.e. which agents are informed):
         self.state = new_state
 
-    def update_transition_matrix(self, starting_state=None, n_selected=None, model=None):
+    def build_transition_matrix(self, starting_state=None, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
@@ -1440,22 +1548,32 @@ class Environment:
         model = model if model is not None else self.transition_model
         self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
 
-    def update_policy(self, model=None, *policy_args, **policy_kwargs):
+    def build_policy(self, model=None, *policy_args, **policy_kwargs):
         """
         model:
             The model used to evaluate the policy.
         """
         model = model if model is not None else self.policy_model
-        self.policy = Policy(env=self, model=model, *policy_args, **policy_kwargs)
+        valid_models = {'policy_iteration','random_useful_policy','random_policy'}
+        assert model in valid_models, f"{model} is not a valid model : {valid_models}"
+        if model=='policy_iteration':
+            self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
+        elif model=='random_useful_policy':
+            self.policy = RandomPolicy(env=self, useful_only=True, *policy_args, **policy_kwargs)
+        elif model=='random_policy':
+            self.policy = RandomPolicy(env=self, useful_only=False, *policy_args, **policy_kwargs)
+        else:
+            raise NotImplementedError("Policy model {model} is not yet implemented.")
 
-    def update_network_graph(self):
+    def build_network_graph(self):
         """
         A graph representation of the agent influence network.
         """
         # Initialize the graph
         self.graph = Graph(env=self)
 
-    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, labels=True, legend=False, 
+                           colors="influence", seed=182, figsize=None, rebuild=False, ax=None):
         """
         Draw the network graph.
         This is a wrapper function for Graph.plot_network_graph,
@@ -1463,9 +1581,10 @@ class Environment:
         """
         # Make sure the graph object has been initialized:
         if self.graph is None:
-            self.update_network_graph()
+            self.build_network_graph()
         # Pass parameters through to Graph.plot_network_graph, which updates as needed:
-        return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
+        return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, labels=labels, legend=legend,
+                                             colors=colors, seed=seed, figsize=figsize, rebuild=rebuild, ax=ax)
 
     def reset_simulation(self):
         """
@@ -1475,15 +1594,22 @@ class Environment:
         self.state_history = []
         self.action_history = []
 
-    def simulate_steps(self, n_steps=1, dry_run=False):
+    def simulate_steps(self, n_steps=1, dry_run=False, seed=None):
         """
         Simulate one step of information propagation.
-        apply:
+        dry_run:
             Whether or not to apply the new state.
             Applies the new states and updates histories (and returns them).
             Returns a state_history, action_history, landing_state tuple.
             Also applies them to the environment, unless dry_run=True.
+        seed:
+            If a seed is specified, builds a new random state.
+            (e.g. to perform different simulations with different seeds).
+            If None, uses the environment's internal random state.
         """
+
+        # Get random state:
+        rs = self.random if (seed is None) else np.random.RandomState(seed)
         
         step_count = 0
         state_history = []
@@ -1501,7 +1627,7 @@ class Environment:
             probs = TransitionMatrix.agent_probabilities(env=self, state=current_state, action=action)
 
             # Simulate an outcome for each agent:
-            landing_state = self.random.binomial(n=1, p=probs).astype(bool)
+            landing_state = rs.binomial(n=1, p=probs).astype(bool)
             landing_state = State(env=self, vector=landing_state)
             
             # Store results:
@@ -1519,7 +1645,79 @@ class Environment:
 
         return state_history, action_history, landing_state
 
+    def build_sub_problem(self, agents, new_env_params=None):
+        """
+        Instantiate a subproblem involving a sub-group of agents
+        (i.e. ignore inner and outer circle connections to any other agents).
+        Returns a new environment with a modified copy of each agent.
 
+        agents:
+            List of agent objects for the sub-problem.
+        new_env_params:
+            (Optional) A dictionary of parameters for the new Environment.
+            By default, the new Environment will be initialized with the same
+            parameters as this one. Any values in the new parameter dict
+            will override the current ones.
+        """
+        
+        # Get agent_ids that are part of the sub-problem:
+        sub_agent_ids = [agent.id for agent in agents]
+        sub_workplace_ids = sorted( set().union(*[agent.workplace_ids for agent in agents]) )
+        sub_specialty_ids = sorted( set().union(*[agent.specialty_ids for agent in agents]) )
+        def filter_list(vals, sub_vals):
+            if vals is None:
+                return None
+            return [val for val in vals if val in sub_vals]
+        # Build copies of agents without connections outside the group:
+        sub_agents = []
+        for agent in agents:
+            # Build copy of agent:
+            sub_agent = Agent(
+                env = None,
+                workplace_ids = filter_list(vals=agent.workplace_ids, sub_vals=sub_workplace_ids),
+                specialty_ids = filter_list(vals=agent.specialty_ids, sub_vals=sub_specialty_ids),
+                inner_circle = filter_list(vals=agent.inner_circle, sub_vals=sub_agent_ids),
+                outer_circle = filter_list(vals=agent.outer_circle, sub_vals=sub_agent_ids),
+                informed_init = agent.informed_init,
+                receptivity = agent.receptivity,
+                persuasiveness = agent.persuasiveness,
+            )
+            sub_agent.id = agent.id
+            sub_agent.informed = agent.informed
+            sub_agent.intervention = agent.intervention
+            # Add copied agent to list:
+            sub_agents.append(sub_agent)
+
+        # Create new environment with for the subproblem:
+        env_params = {
+            'agents' : sub_agents,
+            'agent_ids' : sub_agent_ids,
+            'seed' : self.random.randint(1e8),  # Build a new seed.
+            'base_receptivity' : self.base_receptivity,
+            'base_persuasiveness' : self.base_persuasiveness,
+            'intervention_size' : self.intervention_size,
+            'influence_model' : self.influence_model,
+            'transition_model' : self.transition_model,
+            'policy_model' : self.policy_model,
+        }
+        if new_env_params is not None:
+            assert 'agents' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
+            assert 'agents_ids' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
+            env_params.update(new_env_params)
+        env = Environment(**env_params)
+        return env
+
+    def get_workplace(self, workplace_id):
+        """
+        Returns a list of agents in a given workplace.
+        """
+        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
+
+    def get_speciality(self, speciality_id):
+        """
+        Returns a list of agents in a given speciality.
+        """
+        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
 
     @property
     def G(self):
@@ -1537,35 +1735,35 @@ class Environment:
         """
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.T
 
     @property
     def landing_states(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.landing_states
 
     @property
     def starting_states(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.starting_states
 
     @property
     def state_space(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.state_space
 
     @property
     def action_space(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.action_space
 
     @property
