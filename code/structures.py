@@ -797,7 +797,7 @@ class State:
         self._informed_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
         if vector is not None:    
-            assert len(vector)==self.n_agents
+            assert len(vector)==self.n_agents, f"State constructor got {len(vector)} values, expected {self.n_agents}"
             self._vector = np.array(vector, dtype=bool)
         elif informed_ids is not None:
             self._informed_ids = []
@@ -933,7 +933,7 @@ class Action:
         self._selected_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
         if vector is not None:    
-            assert len(vector)==self.n_agents
+            assert len(vector)==self.n_agents, f"Action constructor got {len(vector)} values, expected {self.n_agents}"
             self._vector = np.array(vector, dtype=bool)
         elif selected_ids is not None:
             self._selected_ids = []
@@ -1044,10 +1044,11 @@ class RandomPolicy(Policy):
             state = self.env.state if state is None else state
             if state is None:
                 raise ValueError("RandomPolicy cannot be run without a state.")
-            null_action = Action(env=self.env, selected_ids=[]).vector
             action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
-            action_space = [null_action] + action_space
-            return action_space
+            if len(action_space)>0:
+                return action_space
+            else:
+                return Action(env=self.env, selected_ids=[]).vector  # Null action.
         else:
             # Build and cache all possible actions:
             if self._action_space is not None:
@@ -1522,7 +1523,7 @@ class Environment:
         """
         model = model if model is not None else self.policy_model
         valid_models = {'policy_iteration','random_useful_policy','random_policy'}
-        assert model in valid_models, f"{model} is not a valid model."
+        assert model in valid_models, f"{model} is not a valid model : {valid_models}"
         if model=='policy_iteration':
             self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
         elif model=='random_useful_policy':
@@ -1610,18 +1611,6 @@ class Environment:
 
         return state_history, action_history, landing_state
 
-    def get_workplace(self, workplace_id):
-        """
-        Returns a list of agents in a given workplace.
-        """
-        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
-
-    def get_speciality(self, speciality_id):
-        """
-        Returns a list of agents in a given speciality.
-        """
-        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
-
     def build_sub_problem(self, agents, new_env_params=None):
         """
         Instantiate a subproblem involving a sub-group of agents
@@ -1683,6 +1672,18 @@ class Environment:
             env_params.update(new_env_params)
         env = Environment(**env_params)
         return env
+
+    def get_workplace(self, workplace_id):
+        """
+        Returns a list of agents in a given workplace.
+        """
+        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
+
+    def get_speciality(self, speciality_id):
+        """
+        Returns a list of agents in a given speciality.
+        """
+        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
 
     @property
     def G(self):
