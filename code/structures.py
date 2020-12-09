@@ -315,13 +315,13 @@ class TransitionMatrix:
     """
 
     @classmethod
-    def enumerate_actions(cls, env, n_selected=None, state=None, as_objects=False):
+    def enumerate_actions(cls, env, n_selected, state=None, as_objects=False):
         """
         Enumerate all possible inteventions in a given environment.
         env:
             The simulation environment.
         n_selected:
-            (int) The max number of inteventions (defaults to value set in environment).
+            (int) The max number of inteventions (capped at number of agents).
         state:
             (State object) If specified, enumerates only actions that can be meaningfully taken at this state.
             If False, exhaustively list all possible actions (including those that select already informed agents).
@@ -330,8 +330,9 @@ class TransitionMatrix:
             Otherwise, return a list of boolean arrays (where values are in the same order as env.agent_ids).
         """
         # Get intervention size:
-        n_selected = n_selected if n_selected else env.intervention_size
-        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        assert n_selected is not None, f"This helper method expects n_selected to be specified explicitly."
+        assert n_selected >= 0
+        n_selected = min(n_selected, len(env.agent_ids))  # Limit to number of agents.
         if state is None:
             # Consider all agents as candidates for intervention:
             selections = list(itertools.combinations(env.agent_ids, n_selected))
@@ -457,8 +458,9 @@ class TransitionMatrix:
         self.agent_ids = agent_ids if (agent_ids is not None) else list(sorted(env.agents.keys()))
 
         # Get intervention size:
-        n_selected = n_selected if n_selected else env.intervention_size
-        n_selected = int(max(0,min(n_selected, len(env.agent_ids))))
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        n_selected = min(n_selected, len(self.env.agent_ids))
+        assert n_selected >= 0
         self.n_selected = n_selected
 
         # Keep track of matrix in scipy.sparse.csr_matrix (or None when it needs rebuilding):
@@ -1061,6 +1063,10 @@ class RandomPolicy(Policy):
             The number of agents to select in each action (defaults to env.intervention_size).
         """
         self.env = env
+
+        # Get intervention size:
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        assert n_selected >= 0
         self.n_selected = n_selected
 
         # Placeholder for policy properties (initalized below):
@@ -1103,6 +1109,10 @@ class RandomUsefulPolicy(Policy):
             The number of agents to select in each action (defaults to env.intervention_size).
         """
         self.env = env
+
+        # Get intervention size:
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        assert n_selected >= 0
         self.n_selected = n_selected
 
     @property
@@ -1153,7 +1163,7 @@ class PolicyIteration(Policy):
         """
         self.env = env
         self.trans = self.env.trans if trans is None else trans
-        # Make sure transition matrix has been udpates:
+        # Make sure transition matrix has been udpated:
         if self.trans is None:
             raise RuntimeError("env.build_transition_matrix was never called.")
 
@@ -1380,6 +1390,10 @@ class DegreeCentrality(Policy):
             If True, only select agents who are not currently informed.
         """
         self.env = env
+
+        # Get intervention size:
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        assert n_selected >= 0
         self.n_selected = n_selected
 
     def get_action_space(self, state=None):
@@ -1634,6 +1648,7 @@ class Environment:
             The model used to build the transition matrix ('exhaustive' or 'pruned').
         """
         model = model if model is not None else self.transition_model
+        n_selected = self.intervention_size if n_selected is None else n_selected
         self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
 
     def build_policy(self, model=None, *policy_args, **policy_kwargs):
