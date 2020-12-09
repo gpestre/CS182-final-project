@@ -128,7 +128,7 @@ class Dataset:
         
         workplace_sizes = [10,20,5,4,4]
         specialty_proportions = [10,3,4,2]
-        
+
         # Build workplaces"
         for w,n_agents in enumerate(workplace_sizes):
             self.build_workplace(
@@ -152,6 +152,38 @@ class Dataset:
                 p_speciality = 0.10,
                 p_other = 0.05,
                 max_connections = 5,
+            )
+        
+        self.build_environment()
+
+    def recipe2(self):
+        
+        workplace_sizes = [4,5]
+        specialty_proportions = [2,1]
+        
+        # Build workplaces"
+        for w,n_agents in enumerate(workplace_sizes):
+            self.build_workplace(
+                workplace_id=w+1,
+                n_agents=n_agents,
+                inner_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=2, method='uniform')(agent_ids),
+                outer_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=4, method='uniform')(agent_ids),
+                specialty_proportions=specialty_proportions,
+                informed_func = lambda: self.random.binomial(n=1, p=0.0),
+                receptivity_func = lambda: self.random.uniform(0.0, 0.5),
+                persuasiveness_func = lambda: self.random.uniform(0.0, 0.5),
+            )
+        
+        # Build connections between workplaces:
+        for _ in range(3):
+            assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
+            self.connect_workplaces(
+                workplace_id_1 = workplace_id_1,
+                workplace_id_2 = workplace_id_2,
+                p_speciality = 0.20,
+                p_other = 0.1,
+                max_connections = 2,
             )
 
         self.build_environment()

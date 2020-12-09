@@ -7,7 +7,11 @@ import numpy as np
 import scipy.sparse
 import networkx as nx
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 import itertools
+
+from matplotlib.colors import Normalize as colorNormalize
+from matplotlib.lines import Line2D
 
 
 class Agent:
@@ -666,7 +670,7 @@ class Graph:
                 self.G.add_edge(agent.id, next_agent_id, val=connection_strength)
                 self._edge_colors.append('#a5a6a9')
 
-    def update_layout(self, iterations=None):
+    def update_layout(self, labels, iterations=None, seed=182):
         """
         Calculate node positions (with specified number of iterations)
         """
@@ -680,17 +684,19 @@ class Graph:
             iterations = 20
 
         # Calculate positions and build edge labels:
-        self.pos = nx.spring_layout(self.G, iterations=iterations)
+        self.pos = nx.spring_layout(self.G, iterations=iterations, seed=seed)
         self.edge_labels = dict()
-        for node1, node2, connection_data in self.G.edges(data=True):
-            if self.pos[node1][0] > self.pos[node2][0]:
-                try:
-                    self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
-                except:
-                    pass
+        if labels == True:
+            for node1, node2, connection_data in self.G.edges(data=True):
+                if self.pos[node1][0] > self.pos[node2][0]:
+                    try:
+                        self.edge_labels[(node1,node2)] = f'{connection_data["val"]}\n\n{self.G.edges[(node2,node1)]["val"]}'
+                    except:
+                        pass
 
 
-    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, labels=True, legend=False, 
+                           colors="influence", seed=182, figsize=None, rebuild=False, ax=None):
         """
         Plot the network graph in the specified axes (or not axes of not specified).
         (The `iterations` parameter is passed to the layout update function, only if needed.)
@@ -698,8 +704,8 @@ class Graph:
         """
 
         # Update layout (and build graph) if needed:
-        if (self.pos is None) or (self.edge_labels is None) or (self._edge_colors is None):
-            self.update_layout(iterations=iterations)
+        if (self.pos is None) or (self.edge_labels is None) or (self._edge_colors is None) or (rebuild==True):
+            self.update_layout(iterations=iterations, labels=labels, seed=seed)
 
         if influenced is None:
             influenced = self.env.state.vector  # Boolean vector.
@@ -709,26 +715,58 @@ class Graph:
 
         # Set up color map
         color_map = []
-        for node in self.node_labels:
-            state_index = self.state_index_lookup[node]
-            if influenced[state_index] and action_nodes[state_index]:
-                color_map.append('#dbb700')
-            elif influenced[state_index]:
-                color_map.append('#f45844')
-            elif action_nodes[state_index]:
-                color_map.append('#3dbd5d')
-            else:
-                color_map.append('#0098d8')
+        if colors == "influence":
+            for node in self.node_labels:
+                state_index = self.state_index_lookup[node]
+                if influenced[state_index] and action_nodes[state_index]:
+                    color_map.append('#dbb700')
+                elif influenced[state_index]:
+                    color_map.append('#f45844')
+                elif action_nodes[state_index]:
+                    color_map.append('#3dbd5d')
+                else:
+                    color_map.append('#0098d8')
+        elif colors == "workplace":
+            all_workplaces = list(self.env.workplaces.keys())
+            norm = colorNormalize(vmin=min(all_workplaces), vmax=max(all_workplaces)+1, clip=True)
+            mapper = cm.ScalarMappable(norm=norm, cmap=cm.hsv)
+            for node in self.node_labels:
+                state_index = self.state_index_lookup[node]
+                workplace = self.env.agents[state_index].workplace_ids[0]
+                color_map.append(mapper.to_rgba(workplace))
+        else:
+            raise ValueError("Colors must be one of ['influence', 'workplace']")
+
+
 
         if ax is None:
             if figsize is None:
                 figsize = (10,7)
             _, ax = plt.subplots(figsize=figsize)
         
-        nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
+        if labels == True:
+            nx.draw_networkx_edge_labels(self.G, self.pos, edge_labels=self.edge_labels, font_color='red')
         nx.draw_networkx(self.G, self.pos, with_labels=True, node_size=400, node_color=color_map, 
                          edge_color=self._edge_colors, ax=ax, connectionstyle='arc3, rad = 0.1')
 
+        if legend == True:
+            if colors == "influence":
+                legend = [Line2D([0], [0], color="#0f0a01", lw=2, label="Inner Connection"),
+                Line2D([0], [0], color="#a5a6a9", lw=2, label="Outer Connection"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#f45844", 
+                        markersize=15, label="Influenced"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#3dbd5d", 
+                        markersize=15, label="Chosen Action"),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor="#0098d8", 
+                        markersize=15, label="Uninfluenced Agent")]
+            elif colors == "workplace":
+                legend = []
+                for workplace_id, color in zip(all_workplaces, set(color_map)):
+                    legend.append(Line2D([0], [0], marker='o', color='w', markerfacecolor=color, 
+                        markersize=15, label=f"Workplace: {workplace_id}"))
+            else:
+                raise ValueError("Colors must be one of ['influence', 'workplace']")
+            ax.legend(handles=legend)
         return ax
 
 
@@ -1534,7 +1572,8 @@ class Environment:
         # Initialize the graph
         self.graph = Graph(env=self)
 
-    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, figsize=None, ax=None):
+    def plot_network_graph(self, iterations=None, influenced=None, action_nodes=None, labels=True, legend=False, 
+                           colors="influence", seed=182, figsize=None, rebuild=False, ax=None):
         """
         Draw the network graph.
         This is a wrapper function for Graph.plot_network_graph,
@@ -1544,7 +1583,8 @@ class Environment:
         if self.graph is None:
             self.build_network_graph()
         # Pass parameters through to Graph.plot_network_graph, which updates as needed:
-        return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
+        return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, labels=labels, legend=legend,
+                                             colors=colors, seed=seed, figsize=figsize, rebuild=rebuild, ax=ax)
 
     def reset_simulation(self):
         """
