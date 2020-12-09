@@ -171,13 +171,13 @@ class Dataset:
         print("Saved {filepath} .")
 
     @classmethod
-    def load_csv(cls, filepath, seed=None):
+    def load_csv(cls, filepath):
 
         if not os.path.isfile(filepath):
             raise FileNotFoundError(f"{filepath} does not exist.")
         
         # Build dataset object:
-        dataset = cls(seed=seed)
+        dataset = cls(seed=None)  # There is no practical way to reapply the same seed.
         
         # Load table:
         table = pd.read_csv(filepath)
@@ -213,6 +213,6 @@ if __name__=="__main__":
     ds.save_csv(filepath, overwrite=False)
 
     # Load test:
-    Agent.reset()  # Reset IDs to zer.
-    env = Dataset.load_csv(filepath, seed=182).build_environment(seed=123)
+    Agent.reset()  # Reset IDs to zero.
+    env = Dataset.load_csv(filepath).build_environment(seed=123)  # Note: Environment seed and Dataset seed are unrelated.
     print(env)
