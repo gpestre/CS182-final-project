@@ -1475,15 +1475,22 @@ class Environment:
         self.state_history = []
         self.action_history = []
 
-    def simulate_steps(self, n_steps=1, dry_run=False):
+    def simulate_steps(self, n_steps=1, dry_run=False, seed=None):
         """
         Simulate one step of information propagation.
-        apply:
+        dry_run:
             Whether or not to apply the new state.
             Applies the new states and updates histories (and returns them).
             Returns a state_history, action_history, landing_state tuple.
             Also applies them to the environment, unless dry_run=True.
+        seed:
+            If a seed is specified, builds a new random state.
+            (e.g. to perform different simulations with different seeds).
+            If None, uses the environment's internal random state.
         """
+
+        # Get random state:
+        rs = self.random if (seed is None) else np.random.RandomState(seed)
         
         step_count = 0
         state_history = []
@@ -1501,7 +1508,7 @@ class Environment:
             probs = TransitionMatrix.agent_probabilities(env=self, state=current_state, action=action)
 
             # Simulate an outcome for each agent:
-            landing_state = self.random.binomial(n=1, p=probs).astype(bool)
+            landing_state = rs.binomial(n=1, p=probs).astype(bool)
             landing_state = State(env=self, vector=landing_state)
             
             # Store results:
