@@ -93,8 +93,9 @@ class Agent:
         """
 
         # Generate unique ID and add to list:
-        self.id = len(Agent.all_agents)
+        self._id = len(Agent.all_agents)
         Agent.all_agents.append(self)
+        self.id = self._id
 
         # Define properties:
         self.env = env
@@ -109,6 +110,22 @@ class Agent:
         # Define state variables:
         self.informed = self.informed_init  # Is this professional currently up to date?
         self.intervention = False  # Has this profession received a direct intervention?
+
+    def copy(self):
+        agent = Agent(
+            env = self.env,
+            workplace_ids = None if self.workplace_ids is None else self.workplace_ids.copy(),
+            specialty_ids = None if self.specialty_ids is None else self.specialty_ids.copy(),
+            inner_circle = None if self.inner_circle is None else self.inner_circle.copy(),
+            outer_circle = None if self.outer_circle is None else self.outer_circle.copy(),
+            informed_init = self.informed_init,
+            receptivity = self.receptivity,
+            persuasiveness = self.persuasiveness,
+        )
+        agent.id = self.id
+        agent.informed = self.informed
+        agent.intervention = self.intervention
+        return agent
 
 
 class AdjacencyMatrix:
@@ -1526,7 +1543,79 @@ class Environment:
 
         return state_history, action_history, landing_state
 
+    def get_workplace(self, workplace_id):
+        """
+        Returns a list of agents in a given workplace.
+        """
+        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
 
+    def get_speciality(self, speciality_id):
+        """
+        Returns a list of agents in a given speciality.
+        """
+        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
+
+    def build_sub_problem(self, agents, new_env_params=None):
+        """
+        Instantiate a subproblem involving a sub-group of agents
+        (i.e. ignore inner and outer circle connections to any other agents).
+        Returns a new environment with a modified copy of each agent.
+
+        agents:
+            List of agent objects for the sub-problem.
+        new_env_params:
+            (Optional) A dictionary of parameters for the new Environment.
+            By default, the new Environment will be initialized with the same
+            parameters as this one. Any values in the new parameter dict
+            will override the current ones.
+        """
+        
+        # Get agent_ids that are part of the sub-problem:
+        sub_agent_ids = [agent.id for agent in agents]
+        sub_workplace_ids = sorted( set().union(*[agent.workplace_ids for agent in agents]) )
+        sub_specialty_ids = sorted( set().union(*[agent.specialty_ids for agent in agents]) )
+        def filter_list(vals, sub_vals):
+            if vals is None:
+                return None
+            return [val for val in vals if val in sub_vals]
+        # Build copies of agents without connections outside the group:
+        sub_agents = []
+        for agent in agents:
+            # Build copy of agent:
+            sub_agent = Agent(
+                env = None,
+                workplace_ids = filter_list(vals=agent.workplace_ids, sub_vals=sub_workplace_ids),
+                specialty_ids = filter_list(vals=agent.specialty_ids, sub_vals=sub_specialty_ids),
+                inner_circle = filter_list(vals=agent.inner_circle, sub_vals=sub_agent_ids),
+                outer_circle = filter_list(vals=agent.outer_circle, sub_vals=sub_agent_ids),
+                informed_init = agent.informed_init,
+                receptivity = agent.receptivity,
+                persuasiveness = agent.persuasiveness,
+            )
+            sub_agent.id = agent.id
+            sub_agent.informed = agent.informed
+            sub_agent.intervention = agent.intervention
+            # Add copied agent to list:
+            sub_agents.append(sub_agent)
+
+        # Create new environment with for the subproblem:
+        env_params = {
+            'agents' : sub_agents,
+            'agent_ids' : sub_agent_ids,
+            'seed' : self.random.randint(1e8),  # Build a new seed.
+            'base_receptivity' : self.base_receptivity,
+            'base_persuasiveness' : self.base_persuasiveness,
+            'intervention_size' : self.intervention_size,
+            'influence_model' : self.influence_model,
+            'transition_model' : self.transition_model,
+            'policy_model' : self.policy_model,
+        }
+        if new_env_params is not None:
+            assert 'agents' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
+            assert 'agents_ids' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
+            env_params.update(new_env_params)
+        env = Environment(**env_params)
+        return env
 
     @property
     def G(self):
