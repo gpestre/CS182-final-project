@@ -1026,7 +1026,7 @@ class RandomPolicy(Policy):
         env:
             The simulation environment.
         n_selected:
-            The number of agents to select in each action (defaults to env.max_interventions).
+            The number of agents to select in each action (defaults to env.intervention_size).
         useful_only:
             If True, only select agents who are not currently informed.
         """
