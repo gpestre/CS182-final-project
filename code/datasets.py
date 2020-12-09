@@ -141,12 +141,11 @@ class Dataset:
                 receptivity_func = lambda: self.random.uniform(0.0, 0.5),
                 persuasiveness_func = lambda: self.random.uniform(0.0, 0.5),
             )
-        # print("Consistent 1: ", self.random.random())
+        
         # Build connections between workplaces:
         for _ in range(3):
             assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
             workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
-            # print("Inconsistent 1: ", self.random.random())
             self.connect_workplaces(
                 workplace_id_1 = workplace_id_1,
                 workplace_id_2 = workplace_id_2,
