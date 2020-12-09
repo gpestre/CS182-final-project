@@ -1081,9 +1081,10 @@ class RandomPolicy(Policy):
     def action_space(self):
         return self._action_space
     
-    def get_action(self):
+    def get_action(self, state=None):
         """
-        Provde a random action:
+        Provde a random action.
+        (Ignores `state`, but accepts it for compatibility.)
         """
         index = self.env.random.randint( self.n_actions )
         return self.action_space[index]
