@@ -9,6 +9,8 @@ class Dataset:
 
     def __init__(self, seed=182):
 
+        assert len(Agent.all_agents)==0, "Please call Agent.reset() to resetart agent_ids at zero before building a dataset."
+
         self.random = np.random.RandomState(seed)
 
         self.agents = []
@@ -17,11 +19,14 @@ class Dataset:
 
         self.env = None
 
-    def build_environment(self):
+    def build_environment(self, *args, **kwargs):
 
         self.env = Environment(
             agents = self.agents,
+            *args, **kwargs
         )
+
+        return self.env
 
 
     def build_workplace(self,
@@ -102,9 +107,9 @@ class Dataset:
                 'agent_id' : agent.id,
                 'workplace_id' : agent.workplace_ids[0],
                 'specialty_id' : agent.specialty_ids[0],
-                'inner_circle' : ", ".join([str(x) for x in agent.inner_circle]),
+                'inner_circle' : ";".join([str(x) for x in agent.inner_circle]),
                 'inner_circle_size' : len(agent.inner_circle),
-                'outer_circle' : ", ".join([str(x) for x in agent.outer_circle]),
+                'outer_circle' : ";".join([str(x) for x in agent.outer_circle]),
                 'outer_circle_size' : len(agent.outer_circle),
                 'informed_init' : agent.informed_init,
                 'receptivity' : agent.receptivity,
@@ -165,9 +170,49 @@ class Dataset:
         df.to_csv(filepath, index=False)
         print("Saved {filepath} .")
 
+    @classmethod
+    def load_csv(cls, filepath, seed=None):
+
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"{filepath} does not exist.")
+        
+        # Build dataset object:
+        dataset = cls(seed=seed)
+        
+        # Load table:
+        table = pd.read_csv(filepath)
+        for i,row in table.iterrows():
+            # Build agent:
+            agent = Agent(
+                workplace_ids = [row['workplace_id']],
+                specialty_ids = [row['specialty_id']],
+                inner_circle = [int(x) for x in row['inner_circle'].split(";")],
+                outer_circle = [int(x) for x in row['outer_circle'].split(";")],
+                informed_init = row['informed_init'],
+                receptivity = row['receptivity'],
+                persuasiveness = row['persuasiveness'],
+            )
+            assert agent.id == row['agent_id'], "Numbering should match if Agent.reset() was called before building."
+            # Add agent to Dataset container:
+            dataset.agents.append(agent)
+        # Add workplaces and specialities to Dataset container:
+        dataset.workplace_ids = sorted(set(table['workplace_id']))
+        dataset.specialty_ids = sorted(set(table['specialty_id']))
+
+        return dataset
+
 
 if __name__=="__main__":
 
+    filepath = "../outputs/dataset1.csv"
+
+    # Build test:
+    Agent.reset()  # Reset IDs to zer.
     ds = Dataset(seed=182)
     ds.recipe1()
-    ds.save_csv("../outputs/dataset1.csv")
+    ds.save_csv(filepath, overwrite=False)
+
+    # Load test:
+    Agent.reset()  # Reset IDs to zer.
+    env = Dataset.load_csv(filepath, seed=182).build_environment(seed=123)
+    print(env)

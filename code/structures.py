@@ -13,6 +13,11 @@ import itertools
 class Agent:
     
     all_agents = list()
+    
+    @classmethod
+    def reset(cls):
+        print("WARNING: Agent class was reset, which may cause conflicting agent_ids.")
+        cls.all_agents = list()
 
     @classmethod
     def to_dict(cls, agents):
