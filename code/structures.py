@@ -1379,15 +1379,13 @@ class DegreeCentrality(Policy):
     Tiebreaker is the lowest action index for reproducibility
     """
     
-    def __init__(self, env, n_selected=None, useful_only=False):
+    def __init__(self, env, n_selected=None):
         """
         Build a policy that randomly selects agents to inform.
         env:
             The simulation environment.
         n_selected:
             The number of agents to select in each action (defaults to env.intervention_size).
-        useful_only:
-            If True, only select agents who are not currently informed.
         """
         self.env = env
 
