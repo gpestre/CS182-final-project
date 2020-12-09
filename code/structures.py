@@ -1362,6 +1362,63 @@ class PolicyIteration(Policy):
         action_index = self.policy[state_index]
         return self.action_space[action_index]
 
+class DegreeCentrality(Policy):
+    """
+    Selects the agent which is most highly connected (and currently uninfluenced)
+
+    Tiebreaker is the lowest action index for reproducibility
+    """
+    
+    def __init__(self, env, n_selected=None, useful_only=False):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.intervention_size).
+        useful_only:
+            If True, only select agents who are not currently informed.
+        """
+        self.env = env
+        self.n_selected = n_selected
+
+    def get_action_space(self, state=None):
+        """
+        Return only agents which are not currently influenced
+        """
+        state = self.env.state if state is None else state
+        if state is None:
+            raise ValueError("RandomPolicy cannot be run without a state.")
+
+        action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
+        if len(action_space)>0:
+            return action_space
+        else:
+            return Action(env=self.env, selected_ids=[]).vector  # Null action.
+
+    def get_action(self, state=None):
+        """
+        Recommend action based on policy.
+        """
+        action_space = self.get_action_space(state=state)
+
+        # Calculate the centrality score fore ach possible action
+        centrality = dict()
+        for aid, agent in self.env.agents.items():
+            centrality[aid] = len(agent.inner_circle) + len(agent.outer_circle)
+
+        action_centralities = []
+        for possible_action in action_space:
+            action_centrality = 0
+            for i, agent in enumerate(possible_action):
+                if agent:
+                    action_centrality += centrality[i]
+            action_centralities.append(action_centrality)
+
+        # Select optimal based on the maximum centrality
+        optimal_action_index = np.argmax(action_centralities)
+        return action_space[optimal_action_index]
+
 class Environment:
 
     """
@@ -1585,7 +1642,7 @@ class Environment:
             The model used to evaluate the policy.
         """
         model = model if model is not None else self.policy_model
-        valid_models = {'policy_iteration','random_useful_policy','random_policy'}
+        valid_models = {'policy_iteration','random_useful_policy','random_policy', 'degree_centrality'}
         assert model in valid_models, f"{model} is not a valid model : {valid_models}"
         if model=='policy_iteration':
             self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
@@ -1593,6 +1650,8 @@ class Environment:
             self.policy = RandomUsefulPolicy(env=self, *policy_args, **policy_kwargs)
         elif model=='random_policy':
             self.policy = RandomPolicy(env=self, *policy_args, **policy_kwargs)
+        elif model=='degree_centrality':
+            self.policy = DegreeCentrality(env=self, *policy_args, **policy_kwargs)
         else:
             raise NotImplementedError("Policy model {model} is not yet implemented.")
 

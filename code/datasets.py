@@ -49,11 +49,14 @@ class Dataset:
 
         new_agents = []
         for agent_id, specialty_id in zip(agent_ids, specialty_id_pool):
+            inner_circle = inner_circle_func(agent_ids)
+            remaining_agent_ids = list(set(agent_ids)-set(inner_circle)) 
+            outer_circle = outer_circle_func(remaining_agent_ids)
             agent = Agent(
                 workplace_ids = [workplace_id],
                 specialty_ids = [specialty_id],
-                inner_circle = inner_circle_func(agent_ids),
-                outer_circle = outer_circle_func(agent_ids),
+                inner_circle = inner_circle,
+                outer_circle = outer_circle,
                 informed_init = informed_func(),
                 receptivity = np.round(receptivity_func(),2),
                 persuasiveness = np.round(persuasiveness_func(),2),
