@@ -368,16 +368,10 @@ class TransitionMatrix:
             # Pruned case:
             # Convert to State object (accepts various input formats):
             current_state = State.coerce(env=env, state=state)
-            # Enumerate states (as list of tuples) and convert to arrays:
-            states = list(itertools.product([False,True], repeat=len(env.agent_ids)))
-            states = [np.array(state) for state in states]
-            # Remove unreachable states:
-            # A state is unreachable there is any agent who is informed in the current state
-            # would become uninformed in the candidate state.
-            states = [
-                candidate_state for candidate_state in states
-                if not np.any( (current_state==True)&(candidate_state==False) )
-            ]
+            # Get list of reachable states for each agent:
+            agent_states = [[True] if s else [False,True] for s in current_state.vector]
+            # Build list of reachable states (all possible combinations of agent-states):
+            states = [np.array(state) for state in itertools.product(*agent_states)]
         if as_objects:
             # Build an action object (using a dict of booleans):
             states = [
