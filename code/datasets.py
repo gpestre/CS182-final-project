@@ -58,7 +58,7 @@ class Dataset:
                 receptivity = np.round(receptivity_func(),2),
                 persuasiveness = np.round(persuasiveness_func(),2),
             )
-            assert agent.id == agent_id, "Something has gone wrong 😱"
+            assert agent.id == agent_id, f"Something has gone wrong 😱 (sometimes happens when using autoreload in a Jupyter notebook)."
             new_agents.append(agent)
 
         # Update global lists:
