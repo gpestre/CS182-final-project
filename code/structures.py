@@ -995,16 +995,89 @@ class Action:
 
 
 class Policy:
+    """
+    Superclass for various kinds of policies.
+    """
     
-    def __init__(self, env, trans=None, model=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+    def __init__(self, env):
+        self.env = env
+
+    @property
+    def action_space(self):
+        """
+        Return a list of available actions.
+        """
+        raise NotImplementedError  # Policy superclass.
+
+    def get_action(self, state):
+        """
+        Recomend action based on policy.
+        """
+        raise NotImplementedError  # Policy superclass.
+
+class RandomPolicy(Policy):
+    """
+    Randomly selects agents to inform.
+    """
+    
+    def __init__(self, env, n_selected=None, useful_only=False):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.max_interventions).
+        useful_only:
+            If True, only select agents who are not currently informed.
+        """
+        self.env = env
+        self.n_selected = n_selected
+        self.useful_only = useful_only
+        self._action_space = None  # Cache (only used when useful_only=False)
+
+    def get_action_space(self, state=None):
+        """
+        Get action state.
+        """
+        if self.useful_only:
+            # Build useful actions:
+            state = self.env.state if state is None else state
+            if state is None:
+                raise ValueError("RandomPolicy cannot be run without a state.")
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=state, as_objects=False)
+            action_space = [null_action] + action_space
+            return action_space
+        else:
+            # Build and cache all possible actions:
+            if self._action_space is not None:
+                return self._action_space
+            null_action = Action(env=self.env, selected_ids=[]).vector
+            action_space = TransitionMatrix.enumerate_actions(self.env, n_selected=self.n_selected, state=None, as_objects=False)
+            action_space = [null_action] + action_space
+            self._action_space = action_space  # Cache.
+            return action_space
+    
+    def get_action(self, state=None):
+        """
+        Recomend action based on policy.
+        """
+        if self.useful_only:
+            action_space = self.get_action_space(state=state)
+        else:
+            action_space = self.get_action_space()
+        index = self.env.random.randint( len(action_space) )
+        return action_space[index]
+        
+class PolicyIteration(Policy):
+    
+    def __init__(self, env, trans=None, gamma=None, epsilon=None, max_steps=None, progress=None):
         """
         env:
             The simulation environment.
         trans:
             (TransitionMatrix object)
             If not specified, uses the environment's transition matrix.
-        method:
-            Method for determining best policy.
         gamma:
             Discount factor.
         epsilon:
@@ -1018,35 +1091,26 @@ class Policy:
         self.trans = self.env.trans if trans is None else trans
         # Make sure transition matrix has been udpates:
         if self.trans is None:
-            raise RuntimeError("env.update_transition_matrix was never called.")
-        # Get method:
-        valid_models = {'policy_iteration'}
-        self.model = 'policy_iteration' if model is None else model
-        assert self.model in valid_models, f"{self.model} is not a valid model."
+            raise RuntimeError("env.build_transition_matrix was never called.")
 
         self.updated = False
 
-        # Model-specific initialization:
-        if (self.model=='policy_iteration'):
+        # Check starting and landing states:
+        if len(self.starting_states) != len(self.landing_states):
+            print(self.starting_states)
+            print(self.landing_states)
+            raise ValueError("Policy iteration requires same number of starting and landing states.")
 
-            if len(self.starting_states) != len(self.landing_states):
-                print(self.starting_states)
-                print(self.landing_states)
-                raise ValueError("Policy iteration requires same number of starting and landing states.")
-
-            # Solver properties:
-            self.gamma = 0.85 if gamma is None else gamma
-            self.epsilon = 0.01 if epsilon is None else epsilon
-            self.max_steps = float("+Inf") if max_steps is None else max_steps
-            self.progress = 20 if progress is None else progress
-            
-            # Solver variables:
-            self.values = self.initialize_values()
-            self.rewards = self.initialize_rewards()
-            self.policy = self.initialize_policy()
-
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        # Solver properties:
+        self.gamma = 0.85 if gamma is None else gamma
+        self.epsilon = 0.01 if epsilon is None else epsilon
+        self.max_steps = float("+Inf") if max_steps is None else max_steps
+        self.progress = 20 if progress is None else progress
+        
+        # Solver variables:
+        self.values = self.initialize_values()
+        self.rewards = self.initialize_rewards()
+        self.policy = self.initialize_policy()
 
         # Initialize:
         self.update()
@@ -1219,10 +1283,7 @@ class Policy:
         """
         Recalculate policy.
         """
-        if (self.model=='policy_iteration'):
-            self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
         # Set flag:
         self.updated = True
 
@@ -1233,12 +1294,9 @@ class Policy:
         # Check flag:
         if not self.updated:
             raise RuntimeError("Policy has not been updated.")
-        if (self.model=='policy_iteration'):
-            state_index = self.encode_state(state_vector=state)
-            action_index = self.policy[state_index]
-            return self.action_space[action_index]
-        else:
-            raise NotImplementedError(f"Policy model {self.model} not implemented.")
+        state_index = self.encode_state(state_vector=state)
+        action_index = self.policy[state_index]
+        return self.action_space[action_index]
 
 class Environment:
 
@@ -1288,7 +1346,7 @@ class Environment:
             (string: 'exhaustive', 'exhaustive_fast', 'reachable', 'pruned')
             [Defaults are handled in the TransitionMatrix class.]
         policy_model:
-            (string: 'policy_evaluation')
+            (string: 'policy_evaluation', 'random_useful_policy', 'random_policy')
             [Defaults are handled in the Policy class.]
         """
 
@@ -1346,9 +1404,9 @@ class Environment:
         self.update_adjacency()
         self.update_influence()
         self.update_state()
-        #self.update_network_graph()
-        #self.update_transition_matrix()
-        #self.update_policy()
+        #self.build_network_graph()
+        #self.build_transition_matrix()
+        #self.build_policy()
         self.reset_simulation()
 
     def update_agents(self):
@@ -1441,7 +1499,7 @@ class Environment:
         # Update state (i.e. which agents are informed):
         self.state = new_state
 
-    def update_transition_matrix(self, starting_state=None, n_selected=None, model=None):
+    def build_transition_matrix(self, starting_state=None, n_selected=None, model=None):
         """
         WARNING - Only run for small problem sizes
 
@@ -1457,15 +1515,24 @@ class Environment:
         model = model if model is not None else self.transition_model
         self.trans = TransitionMatrix(env=self, starting_state=starting_state, model=model, n_selected=n_selected)
 
-    def update_policy(self, model=None, *policy_args, **policy_kwargs):
+    def build_policy(self, model=None, *policy_args, **policy_kwargs):
         """
         model:
             The model used to evaluate the policy.
         """
         model = model if model is not None else self.policy_model
-        self.policy = Policy(env=self, model=model, *policy_args, **policy_kwargs)
+        valid_models = {'policy_iteration','random_useful_policy','random_policy'}
+        assert model in valid_models, f"{model} is not a valid model."
+        if model=='policy_iteration':
+            self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
+        elif model=='random_useful_policy':
+            self.policy = RandomPolicy(env=self, useful_only=True, *policy_args, **policy_kwargs)
+        elif model=='random_policy':
+            self.policy = RandomPolicy(env=self, useful_only=False, *policy_args, **policy_kwargs)
+        else:
+            raise NotImplementedError("Policy model {model} is not yet implemented.")
 
-    def update_network_graph(self):
+    def build_network_graph(self):
         """
         A graph representation of the agent influence network.
         """
@@ -1480,7 +1547,7 @@ class Environment:
         """
         # Make sure the graph object has been initialized:
         if self.graph is None:
-            self.update_network_graph()
+            self.build_network_graph()
         # Pass parameters through to Graph.plot_network_graph, which updates as needed:
         return self.graph.plot_network_graph(iterations=iterations, influenced=influenced, action_nodes=action_nodes, figsize=figsize, ax=ax)
 
@@ -1633,35 +1700,35 @@ class Environment:
         """
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.T
 
     @property
     def landing_states(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.landing_states
 
     @property
     def starting_states(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.starting_states
 
     @property
     def state_space(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.state_space
 
     @property
     def action_space(self):
         if self.trans is None:
             return None
-            #raise RuntimeError("self.update_transition_matrix has not been called.")
+            #raise RuntimeError("self.build_transition_matrix has not been called.")
         return self.trans.action_space
 
     @property
