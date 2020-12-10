@@ -891,6 +891,9 @@ class State:
             self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
 
+    def __len__(self):
+        return self._vector
+
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
 
@@ -1026,6 +1029,9 @@ class Action:
         if self._lookup is None:
             self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
+
+    def __len__(self):
+        return self._vector
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
