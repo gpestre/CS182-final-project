@@ -484,17 +484,33 @@ class TransitionMatrix:
 
     def encode_state(self, state_vector):
         state_vector = State.coerce(self.env, state=state_vector).vector
-        return self.state_index_lookup[tuple(state_vector)]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.state_index_lookup[tuple(state_vector)]
+        except KeyError as e:
+            # This should not usually occur if transition model is 'exhaustive' or 'exhaustive_fast'
+            # but could happen with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
+            raise KeyError(f"Requested state is not in the stored state space (may be unreacheable): {e}")
 
     def decode_state(self, state_index):
-        return self.state_space[state_index]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.state_space[state_index]
+        except IndexError as e:
+            raise IndexError(f"Cannot decode index {state_index} because  state space only has {len(self.state_space)} states: {e}")
 
     def encode_action(self, action_vector):
         action_vector = Action.coerce(self.env, action=action_vector).vector
-        return self.action_index_lookup[tuple(action_vector)]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.action_index_lookup[tuple(action_vector)]
+        except KeyError as e:
+            # This should not usually occur if transition model is 'exhaustive' or 'exhaustive_fast'
+            # but could happen with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
+            raise KeyError(f"Requested action is not in the stored action space (may be non-useful): {e}")
 
     def decode_action(self, action_index):
-        return self.action_space[action_index]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.action_space[action_index]
+        except IndexError as e:
+            raise IndexError(f"Cannot decode index {action_index} because action space only has {len(self.action_space)} actions: {e}")
 
     def update(self):
 
@@ -832,9 +848,12 @@ class State:
         self._vector = np.repeat(False, self.n_agents)
         self._informed_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
-        if vector is not None:    
+        if vector is not None:
             assert len(vector)==self.n_agents, f"State constructor got {len(vector)} values, expected {self.n_agents}"
-            self._vector = np.array(vector, dtype=bool)
+            try:
+                self._vector = vector.vector  # Check if the vector is actually a State object.
+            except:
+                self._vector = np.array(vector, dtype=bool)
         elif informed_ids is not None:
             self._informed_ids = []
             for agent_id in informed_ids:
@@ -847,7 +866,7 @@ class State:
                 self._vector[agent_index] = True
         elif lookup is not None:
             self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
-            for agent_id, val in lookup:
+            for agent_id, val in lookup.items():
                 agent_index = self.env.agent_indices[agent_id]
                 self._lookup[agent_index] = val
                 self._vector[agent_index] = val
@@ -872,8 +891,11 @@ class State:
     @property
     def lookup(self):
         if self._lookup is None:
-            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
+
+    def __len__(self):
+        return self.n_agents
 
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
@@ -968,9 +990,12 @@ class Action:
         self._vector = np.repeat(False, self.n_agents)
         self._selected_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
-        if vector is not None:    
+        if vector is not None:
             assert len(vector)==self.n_agents, f"Action constructor got {len(vector)} values, expected {self.n_agents}"
-            self._vector = np.array(vector, dtype=bool)
+            try:
+                self._vector = vector.vector  # Check if the vector is actually an Action object.
+            except:
+                self._vector = np.array(vector, dtype=bool)
         elif selected_ids is not None:
             self._selected_ids = []
             for agent_id in selected_ids:
@@ -983,7 +1008,7 @@ class Action:
                 self._vector[agent_index] = True
         elif lookup is not None:
             self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
-            for agent_id, val in lookup:
+            for agent_id, val in lookup.items():
                 agent_index = self.env.agent_indices[agent_id]
                 self._lookup[agent_index] = val
                 self._vector[agent_index] = val
@@ -1008,8 +1033,11 @@ class Action:
     @property
     def lookup(self):
         if self._lookup is None:
-            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
+
+    def __len__(self):
+        return self.n_agents
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
@@ -1169,8 +1197,6 @@ class PolicyIteration(Policy):
         if self.trans is None:
             raise RuntimeError("env.build_transition_matrix was never called.")
 
-        self.updated = False
-
         # Check starting and landing states:
         if len(self.starting_states) != len(self.landing_states):
             print(self.starting_states)
@@ -1188,8 +1214,12 @@ class PolicyIteration(Policy):
         self.rewards = self.initialize_rewards()
         self.policy = self.initialize_policy()
 
-        # Initialize:
-        self.update()
+        # Counters:
+        self.value_iterations = 0
+        self.policy_iterations = 0
+
+        # Perform policy iteration:
+        self.policy_iteration()
 
     @property
     def starting_states(self):
@@ -1227,44 +1257,38 @@ class PolicyIteration(Policy):
         """
         Value array for states (1D)
         """
-        return np.zeros(len(self.state_space))
+        values = np.zeros(len(self.state_space))
+        return values
 
     def initialize_rewards(self):
         """
         Create a R(s,'s) matrix (reward can be thought of as independent of action)
         The reward is equal to the increase in the number of agents influenced
         """
-        R = np.zeros((len(self.starting_states), len(self.landing_states)))
+        rewards = np.zeros((len(self.starting_states), len(self.landing_states)))
         for i, state1 in enumerate(self.starting_states):
             for j, state2 in enumerate(self.landing_states):
                 reward = np.max((0, (np.sum(state2) - np.sum(state1))))
-                R[i,j] = reward
-        return R
+                rewards[i,j] = reward
+        return rewards
 
     def initialize_policy(self):
         """
         Value array for states (1D)
         """
-        return np.zeros(len(self.starting_states)).astype(int)
+        policy = np.zeros(len(self.starting_states)).astype(int)
+        return policy
 
-    def calculate_policy_value(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+    def calculate_policy_value(self, policy, values):
         """
         Perform policy estimation.
         """
 
-        # Get default values:
-        gamma = self.gamma if gamma is None else gamma
-        epsilon = self.epsilon if epsilon is None else epsilon
-        max_steps = self.max_steps if max_steps is None else max_steps
-        progress = self.progress if progress is None else progress
-        policy = self.policy if policy is None else policy
-        values = self.values if values is None else values
-        rewards = self.rewards if rewards is None else rewards
-
         # Evaluate:
         new_values = values.copy()
         counter = 0
-        while counter < max_steps:
+        while counter < self.max_steps:
+            self.value_iterations += 1  # Update global step count.
 
             deltas = []
             for state_index, state in enumerate(self.state_space):
@@ -1274,33 +1298,27 @@ class PolicyIteration(Policy):
                 cur_action_index = policy[state_index]
                 
                 transition_matrix = self.T[cur_action_index,state_index,:]
-                reward_matrix = rewards[state_index,:].reshape(-1,)
+                reward_matrix = self.rewards[state_index,:].reshape(-1,)
 
                 # Calculate the next value using Bellman update
-                next_value = np.matmul(transition_matrix, (reward_matrix + gamma * new_values))
+                next_value = np.matmul(transition_matrix, (reward_matrix + self.gamma * new_values))
                 
                 # Update the value matrix 
                 new_values[state_index] = next_value
                 deltas.append(abs(next_value - cur_value))
 
             counter += 1
-            if isinstance(progress, int) and (progress>0) and (counter % progress == 0):
+            if isinstance(self.progress, int) and (self.progress>0) and (counter % self.progress == 0):
                 print(f"{counter} iterations run - max delta = {np.max(deltas)}")
-            if np.max(deltas) < epsilon:
+            if np.max(deltas) < self.epsilon:
                 break
-
+        
         return new_values
 
-    def calculate_policy_improvement(self, policy, values=None, rewards=None, gamma=None):
+    def calculate_policy_improvement(self, policy, values):
         """
         Perform policy improvement.
         """
-
-        # Get default values:
-        gamma = self.gamma if gamma is None else gamma
-        policy = self.policy if policy is None else policy
-        values = self.values if values is None else values
-        rewards = self.rewards if rewards is None else rewards
     
         # Evaluate:
         stable_policy = True
@@ -1314,7 +1332,7 @@ class PolicyIteration(Policy):
             action_values = []
             for action_index, action in enumerate(self.action_space):
                 action_value = np.matmul(self.T[action_index, state_index, :], 
-                                        (rewards[state_index,:] + gamma * values))
+                                        (self.rewards[state_index,:] + self.gamma * values))
                 action_values.append(action_value)
             
             best_action = np.argmax(action_values)
@@ -1327,59 +1345,32 @@ class PolicyIteration(Policy):
 
         return new_policy, stable_policy
 
-    def policy_iteration(self, policy, values=None, rewards=None, gamma=None, epsilon=None, max_steps=None, progress=None):
+    def policy_iteration(self):
         """
         Perform policy iteration.
         """
-        # Get default values:
-        gamma = self.gamma if gamma is None else gamma
-        epsilon = self.epsilon if epsilon is None else epsilon
-        max_steps = self.max_steps if max_steps is None else max_steps
-        progress = self.progress if progress is None else progress
-        policy = self.policy if policy is None else policy
-        values = self.values if values is None else values
-        rewards = self.rewards if rewards is None else rewards
-
-        # Evaluate:
         stable = False
-        new_policy = policy.copy()
-        new_values = values.copy()
         while stable == False:
-            new_values = self.calculate_policy_value(
-                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
-                epsilon=epsilon, max_steps=max_steps, progress=progress
-            )
-            new_policy, stable = self.calculate_policy_improvement(
-                policy = new_policy, values = new_values, rewards = rewards, gamma = gamma,
-            )
-
-        return new_policy     
-
-    def update(self):
-        """
-        Recalculate policy.
-        """
-        self.policy = self.policy_iteration(policy=self.policy, values=self.values, rewards=self.rewards)
-        # Set flag:
-        self.updated = True
+            self.policy_iterations += 1  # Update global step counter.
+            self.values = self.calculate_policy_value(self.policy, self.values)
+            self.policy, stable = self.calculate_policy_improvement(self.policy, self.values)
 
     def get_action(self, state):
         """
         Recomend action based on policy.
         """
-        # Check flag:
-        if not self.updated:
-            raise RuntimeError("Policy has not been updated.")
         # Get this state's index in the state space:
-        try:
-            # Catch potential errors to provided a more helpful error message:
-            state_index = self.encode_state(state_vector=state)
-        except KeyError as e:
-            # This should not occurr if transition model is 'exhaustive' or 'exhaustive'
-            # but could happend with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
-            raise KeyError(f"The provided state is not in the current state space (may be unreacheable from the starting state): {e}")
+        state_index = self.encode_state(state_vector=state)
         action_index = self.policy[state_index]
         return self.action_space[action_index]
+
+    def get_optimal_value(self, state):
+        """
+        Gets the value for a state under the optimal policy.
+        """
+        # Get this state's index in the state space:
+        state_index = self.encode_state(state_vector=state)
+        return self.values[state_index]
 
 class DegreeCentrality(Policy):
     """
@@ -1439,6 +1430,200 @@ class DegreeCentrality(Policy):
         # Select optimal based on the maximum centrality
         optimal_action_index = np.argmax(action_centralities)
         return action_space[optimal_action_index]
+
+class HierarchicalPolicyIteration(Policy):
+    """
+    Randomly selects agents to inform (among those who are not informed already).
+    """
+    
+    def __init__(self, env, n_selected=None, model=None, verbose=True, *policy_args, **policy_kwargs):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.intervention_size).
+        partition_model:
+            The model to use for partitioning the connectivity graph.
+        args, kwargs:
+            Positional and keyword arguments passed to each instance of PolicyIteration.
+        """
+        self.env = env
+
+        # Policy properties:
+        self.verbose = verbose
+        self.policy_args = policy_args
+        self.policy_kwargs = policy_kwargs
+
+        # Get intervention size:
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        assert n_selected >= 0
+        self.n_selected = n_selected
+
+        # Get partition model:
+        valid_partition_models = {'workplaces'}
+        model = 'workplaces' if model is None else model
+        assert model in valid_partition_models, f"{model} is not a valid partition model: {valid_partition_models}."
+        self.model = model
+
+        # Solver variables:
+        self.partitions = dict()  # Keyed by partition_id; gives a list of agent objects in each partition.
+        self.sub_envs = dict()  # Key by parition_id; contains a sub-game environment for each partition.
+        
+        # Initialize:
+        self.update()
+
+    def update(self):
+        """
+        Intialize the hierachical policy.
+        """
+        self.build_partitions()
+        self.build_sub_envs()
+        for partition_id, sub_env in self.sub_envs.items():
+            self.calculate(partition_id)
+
+    def build_partitions(self):
+        """
+        Build agents in each partition.
+        """
+        if self.model == 'workplaces':
+            for agent in self.env.agents.values():
+                # Assign each agent to their primary workplace:
+                workplace_id = -1 if len(agent.workplace_ids)==0 else agent.workplace_ids[0]
+                if workplace_id not in self.partitions:
+                    self.partitions[workplace_id] = []
+                self.partitions[workplace_id].append(agent)
+        else:
+            raise NotImplementedError(f"Partition model {self.model} is not yet implemented.")
+
+    def build_sub_envs(self):
+        """
+        Initialize a sub-problem for each partition.
+        """
+        if len(self.partitions)==0:
+            raise RuntimeError("Must build partitions")
+        for partition_id, agents in self.partitions.items():
+            params = {
+                'policy_model' : 'policy_iteration',
+                'intervention_size' : 1,
+            }
+            sub_env = self.env.build_sub_problem(agents=agents, new_env_params=params)
+            self.sub_envs[partition_id] = sub_env
+
+    def calculate(self, partition_id):
+        """
+        Calculate the optimal policy for a given partition.
+        """
+        if self.verbose:
+            print(f"\nBuilding optimal policy for partition {partition_id}.")
+        # Get sub-problem environment:
+        sub_env = self.sub_envs[partition_id]
+        if self.verbose:
+            print(f"    Initialized sub-problem with {sub_env.state.n_informed}/{sub_env.state.n_agents} informed agents.")
+        # Build transition matrix:
+        sub_env.build_transition_matrix()
+        if self.verbose:
+            print(f"    Built transition matrix with {len(sub_env.trans.state_space):,} states and {len(sub_env.trans.action_space):,} actions.")
+        # Perform policy iteration:
+        sub_env.build_policy(*self.policy_args, **self.policy_kwargs)
+        if self.verbose:
+            print(f"    Performed policy iteration ({sub_env.policy.policy_iterations:,} policy steps, {sub_env.policy.value_iterations:,} value steps).")
+
+    def state_main_to_sub(self, state):
+        """
+        Convert a state in the main environment into a state for each sub-problem.
+        """
+        sub_states = dict()
+        state = State.coerce(env=self.env, state=state)  # Coerce (main) state to State object.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = State(env=sub_env, vector=[
+                state.lookup[agent_id]  # Look up boolean value for this agent in (main) state.
+                for agent_id, agent in sub_env.agents.items()  # Loop through order of agents in sub_env.
+            ])
+            sub_states[partition_id] = sub_state
+        return sub_states
+
+    def state_sub_to_main(self, sub_states):
+        """
+        Convert a dictionary of states for each sub-problem to a state for the main enviroment.
+        """
+        state = {agent_id:False for agent_id in self.env.agent_ids}
+        for partition_id, sub_state in sub_states.items():
+            sub_env = self.sub_envs[partition_id]
+            sub_state = State.coerce(env=sub_env, state=sub_state)  # Coerce to State object.
+            # Update agent state in main dict (prioritizing informed=True partition disagree about an agent's status).
+            for agent_id, val in sub_state.lookup.items():
+                state[agent_id] = (state[agent_id] or val)
+        state = State(env=self.env, lookup=state)
+        return state
+
+    def action_main_to_sub(self, action):
+        """
+        Convert a action in the main environment into a action for each sub-problem.
+        """
+        sub_actions = dict()
+        action = Action.coerce(env=self.env, action=action)  # Coerce (main) action to Action object.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_action = Action(env=sub_env, vector=[
+                action.lookup[agent_id]  # Look up boolean value for this agent in (main) action.
+                for agent_id, agent in sub_env.agents.items()  # Loop through order of agents in sub_env.
+            ])
+            sub_actions[partition_id] = sub_action
+        return sub_actions
+
+    def action_sub_to_main(self, sub_actions):
+        """
+        Convert a dictionary of actions for each sub-problem to a action for the main enviroment.
+        """
+        action = {agent_id:False for agent_id in self.env.agent_ids}
+        for partition_id, sub_action in sub_actions.items():
+            sub_env = self.sub_envs[partition_id]
+            sub_action = Action.coerce(env=sub_env, action=sub_action)  # Coerce to Action object.
+            # Update agent action in main dict (prioritizing selected=True partition disagree about an agent's status).
+            for agent_id, val in sub_action.lookup.items():
+                action[agent_id] = (action[agent_id] or val)
+        action = Action(env=self.env, lookup=action)
+        return action
+
+    def update_sub_states(self, state):
+        """
+        Apply a given state of the main enviroment to all the sub-environments.
+        (Does not happen automatically, because they are independent copies.)
+        """
+        sub_states = self.state_main_to_sub(state).items()
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = sub_states[partition_id]
+            sub_env.update_state(state=sub_state)
+    
+    def get_action(self, state=None):
+        """
+        Recomend action based on policy, for given state.
+        If no state is specified, uses current environment state.
+        """
+        # Check input:
+        state = self.env.state if state is None else state
+        if state is None:
+            raise ValueError("HierarchicalPolicyIteration cannot be run without a state.")
+        # Convert state from main environment into states for each sub-problem:
+        sub_states = self.state_main_to_sub(state)
+        # Get optimal value of recommend action for each current sub-problem:
+        sub_values = []  # List of (id,val) tuples.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = sub_states[partition_id]
+            sub_value = sub_env.policy.get_optimal_value(sub_state)
+            sub_values.append( (partition_id,sub_value) )
+        # Sort partitions by best value and select however many intervention budget allows:
+        sub_values = sorted(sub_values, key=lambda pair: pair[1], reverse=True)
+        selected_partition_ids = [partition_id for partition_id,val in sub_values[:self.n_selected]]
+        # Recommend best single intervention in each of top K partitions:
+        sub_actions = dict()
+        for partition_id in selected_partition_ids:
+            sub_env = self.sub_envs[partition_id]
+            sub_state = sub_states[partition_id]
+            sub_action = sub_env.policy.get_action(sub_state)
+            sub_actions[partition_id] = sub_action
+        action = self.action_sub_to_main(sub_actions=sub_actions)
+        return action
 
 class Environment:
 
@@ -1664,7 +1849,13 @@ class Environment:
             The model used to evaluate the policy.
         """
         model = model if model is not None else self.policy_model
-        valid_models = {'policy_iteration','random_useful_policy','random_policy', 'degree_centrality'}
+        valid_models = {
+            'policy_iteration',
+            'random_useful_policy',
+            'random_policy',
+            'degree_centrality',
+            'hierarchical_policy_iteration',
+        }
         assert model in valid_models, f"{model} is not a valid model : {valid_models}"
         if model=='policy_iteration':
             self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
@@ -1674,6 +1865,8 @@ class Environment:
             self.policy = RandomPolicy(env=self, *policy_args, **policy_kwargs)
         elif model=='degree_centrality':
             self.policy = DegreeCentrality(env=self, *policy_args, **policy_kwargs)
+        elif model=='hierarchical_policy_iteration':
+            self.policy = HierarchicalPolicyIteration(env=self, *policy_args, **policy_kwargs)
         else:
             raise NotImplementedError("Policy model {model} is not yet implemented.")
 
@@ -1829,20 +2022,9 @@ class Environment:
             assert 'agents' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
             assert 'agents_ids' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
             env_params.update(new_env_params)
+        assert env_params['policy_model'].find('hierarchical')<0, "DANGER ZONE! Avoid nesting hierarchical policies."
         env = Environment(**env_params)
         return env
-
-    def get_workplace(self, workplace_id):
-        """
-        Returns a list of agents in a given workplace.
-        """
-        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
-
-    def get_speciality(self, speciality_id):
-        """
-        Returns a list of agents in a given speciality.
-        """
-        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
 
     @property
     def G(self):
