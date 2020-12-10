@@ -519,10 +519,12 @@ class TransitionMatrix:
                     for k, state2 in enumerate(self.landing_states):
 
                         # Check that the new state is consistent with the action alone
+                        # (Makes sure everyone who was selected for the action is informed in the landing state).
                         both_true = action & state2
                         consistent = np.sum(both_true)
-                            
-                        if consistent == self.n_selected:
+                        
+                        n_selected = np.sum(action)  # May be zero for the null action.
+                        if consistent == n_selected:
                         
                             # Calculate the probabilities of influence occuring to each next state
                             total_influence_prob = []
@@ -608,7 +610,7 @@ class TransitionMatrix:
             raise NotImplementedError(f"Influence model {self.model} is not yet implemented.")
 
         sum_check = self.T.sum(axis=-1)
-        assert np.allclose( sum_check, np.ones(sum_check.shape), atol=1e-5), "Expected all rows to sum to 1."
+        assert np.allclose( sum_check, 1, atol=1e-5), "Expected all rows to sum to 1."
 
         # Create reverse lookups:
         self.state_index_lookup = {tuple(state_vector):state_index for state_index,state_vector in enumerate(self.state_space)}
@@ -1368,7 +1370,14 @@ class PolicyIteration(Policy):
         # Check flag:
         if not self.updated:
             raise RuntimeError("Policy has not been updated.")
-        state_index = self.encode_state(state_vector=state)
+        # Get this state's index in the state space:
+        try:
+            # Catch potential errors to provided a more helpful error message:
+            state_index = self.encode_state(state_vector=state)
+        except KeyError as e:
+            # This should not occurr if transition model is 'exhaustive' or 'exhaustive'
+            # but could happend with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
+            raise KeyError(f"The provided state is not in the current state space (may be unreacheable from the starting state): {e}")
         action_index = self.policy[state_index]
         return self.action_space[action_index]
 
