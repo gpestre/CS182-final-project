@@ -863,7 +863,7 @@ class State:
                 self._vector[agent_index] = True
         elif lookup is not None:
             self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
-            for agent_id, val in lookup:
+            for agent_id, val in lookup.items():
                 agent_index = self.env.agent_indices[agent_id]
                 self._lookup[agent_index] = val
                 self._vector[agent_index] = val
@@ -999,7 +999,7 @@ class Action:
                 self._vector[agent_index] = True
         elif lookup is not None:
             self._lookup = {agent_id:False for agent_id in self.env.agent_ids}
-            for agent_id, val in lookup:
+            for agent_id, val in lookup.items():
                 agent_index = self.env.agent_indices[agent_id]
                 self._lookup[agent_index] = val
                 self._vector[agent_index] = val
