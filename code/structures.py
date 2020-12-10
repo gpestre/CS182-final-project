@@ -888,7 +888,7 @@ class State:
     @property
     def lookup(self):
         if self._lookup is None:
-            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
 
     def __str__(self):
@@ -1024,7 +1024,7 @@ class Action:
     @property
     def lookup(self):
         if self._lookup is None:
-            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector) if val}
+            self._lookup = {agent_id:val for agent_id,val in zip(self.env.agent_ids,self._vector)}
         return self._lookup
 
     def __str__(self):
