@@ -848,9 +848,12 @@ class State:
         self._vector = np.repeat(False, self.n_agents)
         self._informed_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
-        if vector is not None:    
+        if vector is not None:
             assert len(vector)==self.n_agents, f"State constructor got {len(vector)} values, expected {self.n_agents}"
-            self._vector = np.array(vector, dtype=bool)
+            try:
+                self._vector = vector.vector  # Check if the vector is actually a State object.
+            except:
+                self._vector = np.array(vector, dtype=bool)
         elif informed_ids is not None:
             self._informed_ids = []
             for agent_id in informed_ids:
@@ -892,7 +895,7 @@ class State:
         return self._lookup
 
     def __len__(self):
-        return self._vector
+        return self.n_agents
 
     def __str__(self):
         return f"<State with {self.n_informed}/{self.n_agents} informed agents>"
@@ -987,9 +990,12 @@ class Action:
         self._vector = np.repeat(False, self.n_agents)
         self._selected_ids = None  # Built on demand.
         self._lookup = None  # Built on demand.
-        if vector is not None:    
+        if vector is not None:
             assert len(vector)==self.n_agents, f"Action constructor got {len(vector)} values, expected {self.n_agents}"
-            self._vector = np.array(vector, dtype=bool)
+            try:
+                self._vector = vector.vector  # Check if the vector is actually an Action object.
+            except:
+                self._vector = np.array(vector, dtype=bool)
         elif selected_ids is not None:
             self._selected_ids = []
             for agent_id in selected_ids:
@@ -1031,7 +1037,7 @@ class Action:
         return self._lookup
 
     def __len__(self):
-        return self._vector
+        return self.n_agents
 
     def __str__(self):
         return f"<Action with {self.n_selected}/{self.n_agents} selected agents>"
