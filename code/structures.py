@@ -1697,7 +1697,7 @@ class Environment:
         self.state_history = []
         self.action_history = []
 
-    def simulate_steps(self, n_steps=1, dry_run=False, seed=None):
+    def simulate_steps(self, n_steps=1, dry_run=False, action_schedule=None, seed=None):
         """
         Simulate one step of information propagation.
         dry_run:
@@ -1714,6 +1714,19 @@ class Environment:
         # Get random state:
         rs = self.random if (seed is None) else np.random.RandomState(seed)
         
+        def is_action_step(step_count, action_schedule):
+                        
+            global_step_count = self.step_count + step_count + 1
+            if isinstance(action_schedule, list):
+                if global_step_count in action_schedule:
+                    return True
+                
+            if isinstance(action_schedule, int):
+                if global_step_count % action_schedule == 1:
+                    return True
+            
+            return False
+
         step_count = 0
         state_history = []
         action_history = []
@@ -1721,8 +1734,8 @@ class Environment:
         for _ in range(n_steps):
             
             # Get action from policy:
-            if self.policy:
-                action = self.policy.get_action(current_state)
+            if (self.policy is not None) and (is_action_step(step_count, action_schedule)):
+                action = Action(env=self, vector=self.policy.get_action(current_state))
             else:
                 action = Action(env=self, selected_ids=[])  # Placeholder action.
             
