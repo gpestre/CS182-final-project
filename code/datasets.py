@@ -193,7 +193,7 @@ class Dataset:
 
     def recipe3(self):
         
-        workplace_sizes = [11,9,8,8,6,5,5,3]
+        workplace_sizes = [9,9,8,8,8,5,5,3]
         specialty_proportions = [10,6,5,4,1,1]
         
         # Build workplaces"
@@ -226,10 +226,11 @@ class Dataset:
     def recipe4(self):
         
         # Calculation based on ~450 doctors per 100,000 population in MA (CA population = 105,000) and also list of
-        # clinics (total 45) which can be found here - https://www.mass.gov/service-details/find-information-about-licensed-or-certified-health-care-facilities
+        # clinics (total 45) which can be found here (To reduce runtime we capped the number of doctors at 300). 
+        # https://www.mass.gov/service-details/find-information-about-licensed-or-certified-health-care-facilities
         workplace_sizes = []
         for _ in range(45):
-            workplace_sizes.append(int(self.random.uniform(8,13)))
+            workplace_sizes.append(int(self.random.uniform(4,9)))
 
         # From Statista - https://www.statista.com/statistics/210953/number-of-active-physicians-in-massachusetts-by-specialty-area/
         specialty_proportions = [2883, 1919, 1824, 1757, 2054, 1668, 1219, 505, 7310]
