@@ -191,6 +191,76 @@ class Dataset:
 
         self.build_environment()
 
+    def recipe3(self):
+        
+        workplace_sizes = [11,9,8,8,6,5,5,3]
+        specialty_proportions = [10,6,5,4,1,1]
+        
+        # Build workplaces"
+        for w,n_agents in enumerate(workplace_sizes):
+            self.build_workplace(
+                workplace_id=w+1,
+                n_agents=n_agents,
+                inner_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=2, method='uniform')(agent_ids),
+                outer_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=4, method='uniform')(agent_ids),
+                specialty_proportions=specialty_proportions,
+                informed_func = lambda: self.random.binomial(n=1, p=0.0),
+                receptivity_func = lambda: self.random.uniform(0.0, 0.5),
+                persuasiveness_func = lambda: self.random.uniform(0.0, 0.5),
+            )
+        
+        # Build connections between workplaces:
+        for _ in range(3):
+            assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2)
+            self.connect_workplaces(
+                workplace_id_1 = workplace_id_1,
+                workplace_id_2 = workplace_id_2,
+                p_speciality = 0.35,
+                p_other = 0.2,
+                max_connections = 2,
+            )
+
+        self.build_environment()
+
+    def recipe4(self):
+        
+        # Calculation based on ~450 doctors per 100,000 population in MA (CA population = 105,000) and also list of
+        # clinics (total 45) which can be found here - https://www.mass.gov/service-details/find-information-about-licensed-or-certified-health-care-facilities
+        workplace_sizes = []
+        for _ in range(45):
+            workplace_sizes.append(int(self.random.uniform(8,13)))
+
+        # From Statista - https://www.statista.com/statistics/210953/number-of-active-physicians-in-massachusetts-by-specialty-area/
+        specialty_proportions = [2883, 1919, 1824, 1757, 2054, 1668, 1219, 505, 7310]
+
+        # Build workplaces"
+        for w,n_agents in enumerate(workplace_sizes):
+            self.build_workplace(
+                workplace_id=w+1,
+                n_agents=n_agents,
+                inner_circle_func = lambda agent_ids: self.rand_choice_func(n_min=1, n_max=4, method='uniform')(agent_ids),
+                outer_circle_func = lambda agent_ids: self.rand_choice_func(n_min=3, n_max=7, method='uniform')(agent_ids),
+                specialty_proportions=specialty_proportions,
+                informed_func = lambda: self.random.binomial(n=1, p=0.0),
+                receptivity_func = lambda: self.random.uniform(0.0, 0.5),
+                persuasiveness_func = lambda: self.random.uniform(0.0, 0.5),
+            )
+        
+        # Build connections between workplaces:
+        for _ in range(3):
+            assert len(self.workplace_ids) >= 2, "Need at least 2 workplaces to connect."
+            workplace_id_1, workplace_id_2 = self.random.choice(self.workplace_ids, size=2, replace=False)
+            self.connect_workplaces(
+                workplace_id_1 = workplace_id_1,
+                workplace_id_2 = workplace_id_2,
+                p_speciality = 0.10,
+                p_other = 0.05,
+                max_connections = 5,
+            )
+        
+        self.build_environment()
+
     def rand_choice_func(self, n_min, n_max, method='uniform'):
             if method=='uniform':
                 def func(vals):
