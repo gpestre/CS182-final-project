@@ -1202,6 +1202,10 @@ class PolicyIteration(Policy):
         self.rewards = self.initialize_rewards()
         self.policy = self.initialize_policy()
 
+        # Counters:
+        self.value_iterations = 0
+        self.policy_iterations = 0
+
         # Perform policy iteration:
         self.policy_iteration()
 
@@ -1272,6 +1276,7 @@ class PolicyIteration(Policy):
         new_values = values.copy()
         counter = 0
         while counter < self.max_steps:
+            self.value_iterations += 1  # Update global step count.
 
             deltas = []
             for state_index, state in enumerate(self.state_space):
@@ -1334,6 +1339,7 @@ class PolicyIteration(Policy):
         """
         stable = False
         while stable == False:
+            self.policy_iterations += 1  # Update global step counter.
             self.values = self.calculate_policy_value(self.policy, self.values)
             self.policy, stable = self.calculate_policy_improvement(self.policy, self.values)
 
