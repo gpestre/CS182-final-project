@@ -1787,18 +1787,6 @@ class Environment:
         env = Environment(**env_params)
         return env
 
-    def get_workplace(self, workplace_id):
-        """
-        Returns a list of agents in a given workplace.
-        """
-        return [agent for agent in self.agents.values() if workplace_id in agent.workplace_ids]
-
-    def get_speciality(self, speciality_id):
-        """
-        Returns a list of agents in a given speciality.
-        """
-        return [agent for agent in self.agents.values() if speciality_id in agent.speciality_ids]
-
     @property
     def G(self):
         """
