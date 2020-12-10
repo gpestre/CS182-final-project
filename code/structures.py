@@ -1346,6 +1346,14 @@ class PolicyIteration(Policy):
         action_index = self.policy[state_index]
         return self.action_space[action_index]
 
+    def get_optimal_value(self, state):
+        """
+        Gets the value for a state under the optimal policy.
+        """
+        # Get this state's index in the state space:
+        state_index = self.encode_state(state_vector=state)
+        return self.values[state_index]
+
 class DegreeCentrality(Policy):
     """
     Selects the agent which is most highly connected (and currently uninfluenced)
