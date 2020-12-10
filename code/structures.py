@@ -484,17 +484,33 @@ class TransitionMatrix:
 
     def encode_state(self, state_vector):
         state_vector = State.coerce(self.env, state=state_vector).vector
-        return self.state_index_lookup[tuple(state_vector)]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.state_index_lookup[tuple(state_vector)]
+        except KeyError as e:
+            # This should not usually occur if transition model is 'exhaustive' or 'exhaustive_fast'
+            # but could happen with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
+            raise KeyError(f"Requested state is not in the stored state space (may be unreacheable): {e}")
 
     def decode_state(self, state_index):
-        return self.state_space[state_index]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.state_space[state_index]
+        except IndexError as e:
+            raise IndexError(f"Cannot decode index {state_index} because  state space only has {len(self.state_space)} states: {e}")
 
     def encode_action(self, action_vector):
         action_vector = Action.coerce(self.env, action=action_vector).vector
-        return self.action_index_lookup[tuple(action_vector)]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.action_index_lookup[tuple(action_vector)]
+        except KeyError as e:
+            # This should not usually occur if transition model is 'exhaustive' or 'exhaustive_fast'
+            # but could happen with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
+            raise KeyError(f"Requested action is not in the stored action space (may be non-useful): {e}")
 
     def decode_action(self, action_index):
-        return self.action_space[action_index]
+        try: # Catch potential errors to provide a more helpful error message:
+            return self.action_space[action_index]
+        except IndexError as e:
+            raise IndexError(f"Cannot decode index {action_index} because action space only has {len(self.action_space)} actions: {e}")
 
     def update(self):
 
@@ -1326,13 +1342,7 @@ class PolicyIteration(Policy):
         Recomend action based on policy.
         """
         # Get this state's index in the state space:
-        try:
-            # Catch potential errors to provided a more helpful error message:
-            state_index = self.encode_state(state_vector=state)
-        except KeyError as e:
-            # This should not occurr if transition model is 'exhaustive' or 'exhaustive'
-            # but could happend with models like 'reachable' and 'pruned', which do not calculate transitions from unreachable states.
-            raise KeyError(f"The provided state is not in the current state space (may be unreacheable from the starting state): {e}")
+        state_index = self.encode_state(state_vector=state)
         action_index = self.policy[state_index]
         return self.action_space[action_index]
 
