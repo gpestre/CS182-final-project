@@ -1581,7 +1581,7 @@ class HierarchicalPolicyIteration(Policy):
         sub_states = self.state_main_to_sub(state).items()
         for partition_id, sub_env in self.sub_envs.items():
             sub_state = sub_states[partition_id]
-            sub.env.update_state(state=sub_state)
+            sub_env.update_state(state=sub_state)
     
     def get_action(self, state=None):
         """
