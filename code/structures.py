@@ -1419,6 +1419,200 @@ class DegreeCentrality(Policy):
         optimal_action_index = np.argmax(action_centralities)
         return action_space[optimal_action_index]
 
+class HierarchicalPolicyIteration(Policy):
+    """
+    Randomly selects agents to inform (among those who are not informed already).
+    """
+    
+    def __init__(self, env, n_selected=None, model=None, verbose=True, *policy_args, **policy_kwargs):
+        """
+        Build a policy that randomly selects agents to inform.
+        env:
+            The simulation environment.
+        n_selected:
+            The number of agents to select in each action (defaults to env.intervention_size).
+        partition_model:
+            The model to use for partitioning the connectivity graph.
+        args, kwargs:
+            Positional and keyword arguments passed to each instance of PolicyIteration.
+        """
+        self.env = env
+
+        # Policy properties:
+        self.verbose = verbose
+        self.policy_args = policy_args
+        self.policy_kwargs = policy_kwargs
+
+        # Get intervention size:
+        n_selected = env.intervention_size if n_selected is None else int( n_selected )
+        assert n_selected >= 0
+        self.n_selected = n_selected
+
+        # Get partition model:
+        valid_partition_models = {'workplaces'}
+        model = 'workplaces' if model is None else model
+        assert model in valid_partition_models, f"{model} is not a valid partition model: {valid_partition_models}."
+        self.model = model
+
+        # Solver variables:
+        self.partitions = dict()  # Keyed by partition_id; gives a list of agent objects in each partition.
+        self.sub_envs = dict()  # Key by parition_id; contains a sub-game environment for each partition.
+        
+        # Initialize:
+        self.update()
+
+    def update(self):
+        """
+        Intialize the hierachical policy.
+        """
+        self.build_partitions()
+        self.build_sub_envs()
+        for partition_id, sub_env in self.sub_envs.items():
+            self.calculate(partition_id)
+
+    def build_partitions(self):
+        """
+        Build agents in each partition.
+        """
+        if self.model == 'workplaces':
+            for agent in self.env.agents.values():
+                # Assign each agent to their primary workplace:
+                workplace_id = -1 if len(agent.workplace_ids)==0 else agent.workplace_ids[0]
+                if workplace_id not in self.partitions:
+                    self.partitions[workplace_id] = []
+                self.partitions[workplace_id].append(agent)
+        else:
+            raise NotImplementedError(f"Partition model {self.model} is not yet implemented.")
+
+    def build_sub_envs(self):
+        """
+        Initialize a sub-problem for each partition.
+        """
+        if len(self.partitions)==0:
+            raise RuntimeError("Must build partitions")
+        for partition_id, agents in self.partitions.items():
+            params = {
+                'policy_model' : 'policy_iteration',
+                'intervention_size' : 1,
+            }
+            sub_env = self.env.build_sub_problem(agents=agents, new_env_params=params)
+            self.sub_envs[partition_id] = sub_env
+
+    def calculate(self, partition_id):
+        """
+        Calculate the optimal policy for a given partition.
+        """
+        if self.verbose:
+            print(f"\nBuilding optimal policy for partition {partition_id}.")
+        # Get sub-problem environment:
+        sub_env = self.sub_envs[partition_id]
+        if self.verbose:
+            print(f"    Initialized sub-problem with {sub_env.state.n_informed}/{sub_env.state.n_agents} informed agents.")
+        # Build transition matrix:
+        sub_env.build_transition_matrix()
+        if self.verbose:
+            print(f"    Built transition matrix with {len(sub_env.trans.state_space):,} states and {len(sub_env.trans.action_space):,} actions.")
+        # Perform policy iteration:
+        sub_env.build_policy(*self.policy_args, **self.policy_kwargs)
+        if self.verbose:
+            print(f"    Performed policy iteration ({sub_env.policy.policy_iterations:,} policy steps, {sub_env.policy.value_iterations:,} value steps).")
+
+    def state_main_to_sub(self, state):
+        """
+        Convert a state in the main environment into a state for each sub-problem.
+        """
+        sub_states = dict()
+        state = State.coerce(env=self.env, state=state)  # Coerce (main) state to State object.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = State(env=sub_env, vector=[
+                state.lookup[agent_id]  # Look up boolean value for this agent in (main) state.
+                for agent_id, agent in sub_env.agents.items()  # Loop through order of agents in sub_env.
+            ])
+            sub_states[partition_id] = sub_state
+        return sub_states
+
+    def state_sub_to_main(self, sub_states):
+        """
+        Convert a dictionary of states for each sub-problem to a state for the main enviroment.
+        """
+        state = {agent_id:False for agent_id in self.env.agent_ids}
+        for partition_id, sub_state in sub_states.items():
+            sub_env = self.sub_envs[partition_id]
+            sub_state = State.coerce(env=sub_env, state=sub_state)  # Coerce to State object.
+            # Update agent state in main dict (prioritizing informed=True partition disagree about an agent's status).
+            for agent_id, val in sub_state.lookup.items():
+                state[agent_id] = (state[agent_id] or val)
+        state = State(env=self.env, lookup=state)
+        return state
+
+    def action_main_to_sub(self, action):
+        """
+        Convert a action in the main environment into a action for each sub-problem.
+        """
+        sub_actions = dict()
+        action = Action.coerce(env=self.env, action=action)  # Coerce (main) action to Action object.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_action = Action(env=sub_env, vector=[
+                action.lookup[agent_id]  # Look up boolean value for this agent in (main) action.
+                for agent_id, agent in sub_env.agents.items()  # Loop through order of agents in sub_env.
+            ])
+            sub_actions[partition_id] = sub_action
+        return sub_actions
+
+    def action_sub_to_main(self, sub_actions):
+        """
+        Convert a dictionary of actions for each sub-problem to a action for the main enviroment.
+        """
+        action = {agent_id:False for agent_id in self.env.agent_ids}
+        for partition_id, sub_action in sub_actions.items():
+            sub_env = self.sub_envs[partition_id]
+            sub_action = Action.coerce(env=sub_env, action=sub_action)  # Coerce to Action object.
+            # Update agent action in main dict (prioritizing selected=True partition disagree about an agent's status).
+            for agent_id, val in sub_action.lookup.items():
+                action[agent_id] = (action[agent_id] or val)
+        action = Action(env=self.env, lookup=action)
+        return action
+
+    def update_sub_states(self, state):
+        """
+        Apply a given state of the main enviroment to all the sub-environments.
+        (Does not happen automatically, because they are independent copies.)
+        """
+        sub_states = self.state_main_to_sub(state).items()
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = sub_states[partition_id]
+            sub.env.update_state(state=sub_state)
+    
+    def get_action(self, state=None):
+        """
+        Recomend action based on policy, for given state.
+        If no state is specified, uses current environment state.
+        """
+        # Check input:
+        state = self.env.state if state is None else state
+        if state is None:
+            raise ValueError("HierarchicalPolicyIteration cannot be run without a state.")
+        # Convert state from main environment into states for each sub-problem:
+        sub_states = self.state_main_to_sub(state)
+        # Get optimal value of recommend action for each current sub-problem:
+        sub_values = []  # List of (id,val) tuples.
+        for partition_id, sub_env in self.sub_envs.items():
+            sub_state = sub_states[partition_id]
+            sub_value = sub_env.policy.get_optimal_value(sub_state)
+            sub_values.append( (partition_id,sub_value) )
+        # Sort partitions by best value and select however many intervention budget allows:
+        sub_values = sorted(sub_values, key=lambda pair: pair[1], reverse=True)
+        selected_partition_ids = [partition_id for partition_id,val in sub_values[:self.n_selected]]
+        # Recommend best single intervention in each of top K partitions:
+        sub_actions = dict()
+        for partition_id in selected_partition_ids:
+            sub_env = self.sub_envs[partition_id]
+            sub_state = sub_states[partition_id]
+            sub_action = sub_env.policy.get_action(sub_state)
+            sub_actions[partition_id] = sub_action
+        action = self.action_sub_to_main(sub_actions=sub_actions)
+        return action
+
 class Environment:
 
     """
@@ -1643,7 +1837,13 @@ class Environment:
             The model used to evaluate the policy.
         """
         model = model if model is not None else self.policy_model
-        valid_models = {'policy_iteration','random_useful_policy','random_policy', 'degree_centrality'}
+        valid_models = {
+            'policy_iteration',
+            'random_useful_policy',
+            'random_policy',
+            'degree_centrality',
+            'hierarchical_policy_iteration',
+        }
         assert model in valid_models, f"{model} is not a valid model : {valid_models}"
         if model=='policy_iteration':
             self.policy = PolicyIteration(env=self, *policy_args, **policy_kwargs)
@@ -1653,6 +1853,8 @@ class Environment:
             self.policy = RandomPolicy(env=self, *policy_args, **policy_kwargs)
         elif model=='degree_centrality':
             self.policy = DegreeCentrality(env=self, *policy_args, **policy_kwargs)
+        elif model=='hierarchical_policy_iteration':
+            self.policy = HierarchicalPolicyIteration(env=self, *policy_args, **policy_kwargs)
         else:
             raise NotImplementedError("Policy model {model} is not yet implemented.")
 
@@ -1808,6 +2010,7 @@ class Environment:
             assert 'agents' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
             assert 'agents_ids' not in new_env_params, "Should not override the list of (sub) agents for the new Environment."
             env_params.update(new_env_params)
+        assert env_params['policy_model'].find('hierarchical')<0, "DANGER ZONE! Avoid nesting hierarchical policies."
         env = Environment(**env_params)
         return env
 
